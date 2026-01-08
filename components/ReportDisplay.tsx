@@ -5,6 +5,8 @@ import { Printer, Download, Clock, ChevronDown, Sparkles, MessageSquareText, Glo
 import { refineSection, createReportChatSession, verifyClaim, VerificationResult, conductDeepResearch } from '../services/geminiService';
 import ChatInterface from './ChatInterface';
 import { Chat } from '@google/genai';
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, BorderStyle } from "docx";
+import FileSaver from "file-saver";
 
 interface ReportDisplayProps {
   report: IntelligenceReport | null;
@@ -91,6 +93,123 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
     } catch { onProcessingEnd?.(); alert("Research failed."); }
   };
 
+  const handleDownloadDocx = async () => {
+    if (!report) return;
+
+    try {
+      const doc = new Document({
+        styles: {
+            paragraphStyles: [
+                {
+                    id: "Normal",
+                    name: "Normal",
+                    run: { font: "Calibri", size: 22 }, // 11pt
+                    paragraph: { spacing: { after: 120 } }
+                },
+                {
+                    id: "Heading1",
+                    name: "Heading 1",
+                    run: { font: "Calibri", size: 32, bold: true, color: "111111" },
+                    paragraph: { spacing: { before: 240, after: 120 } }
+                },
+                {
+                    id: "Heading2",
+                    name: "Heading 2",
+                    run: { font: "Calibri", size: 26, bold: true, color: "1d4ed8" },
+                    paragraph: { spacing: { before: 240, after: 120 } }
+                }
+            ]
+        },
+        sections: [{
+          properties: {},
+          children: [
+            // Title
+            new Paragraph({
+              text: report.reportTitle,
+              heading: HeadingLevel.TITLE,
+              alignment: AlignmentType.CENTER,
+              run: { font: "Calibri", size: 36, bold: true }
+            }),
+            // Meta
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              children: [
+                  new TextRun({ text: `DATE: ${report.dateOfInformation.toUpperCase()}`, bold: true, size: 16 }),
+                  new TextRun({ text: " | ", size: 16 }),
+                  new TextRun({ text: `REF: ${report.referenceNumber || "N/A"}`, size: 16 })
+              ],
+              border: { bottom: { color: "000000", space: 12, value: BorderStyle.SINGLE, size: 6 } },
+              spacing: { after: 400 }
+            }),
+            // Executive Summary
+            new Paragraph({
+                text: "EXECUTIVE SUMMARY",
+                heading: HeadingLevel.HEADING_2,
+            }),
+            new Paragraph({
+                children: [ new TextRun({ text: report.executiveSummary }) ],
+                border: { left: { color: "000000", space: 12, value: BorderStyle.SINGLE, size: 12 } },
+                indent: { left: 240 },
+                spacing: { after: 400 }
+            }),
+            // Sections
+            ...report.sections.flatMap((s, i) => {
+                const head = new Paragraph({
+                    text: `${i+1}.0 ${s.title.toUpperCase()}`,
+                    heading: HeadingLevel.HEADING_2
+                });
+                let body: Paragraph[] = [];
+                if (Array.isArray(s.content)) {
+                    body = s.content.map(line => new Paragraph({
+                        text: line,
+                        bullet: { level: 0 }
+                    }));
+                } else {
+                    body = s.content.split('\n').map(line => new Paragraph({ text: line }));
+                }
+                return [head, ...body];
+            }),
+            // Appendix A
+            new Paragraph({
+                text: "APPENDIX A: KEY ENTITIES",
+                heading: HeadingLevel.HEADING_1,
+                pageBreakBefore: true,
+                spacing: { before: 400, after: 200 }
+            }),
+            ...report.entities.map(e => new Paragraph({
+                children: [
+                    new TextRun({ text: e.name, bold: true }),
+                    new TextRun({ text: ` [${e.type.toUpperCase()}]`, size: 18, color: "666666" }),
+                    new TextRun({ text: ` - ${e.context}` })
+                ],
+                spacing: { after: 120 }
+            })),
+            // Appendix B
+            new Paragraph({
+                text: "APPENDIX B: SOURCE MANIFEST",
+                heading: HeadingLevel.HEADING_1,
+                spacing: { before: 400, after: 200 }
+            }),
+            ...(report.relevantLinks || []).map((l, i) => new Paragraph({
+                children: [
+                    new TextRun({ text: `[${i+1}] `, bold: true }),
+                    new TextRun({ text: l.title || "External Source" }),
+                    new TextRun({ text: `\n${l.url}`, size: 16, color: "004488" })
+                ],
+                spacing: { after: 160 }
+            }))
+          ]
+        }]
+      });
+
+      const blob = await Packer.toBlob(doc);
+      FileSaver.saveAs(blob, `INTREP_${report.dateOfInformation}_${report.reportTitle.replace(/[^a-zA-Z0-9]/g, '_').substring(0,30)}.docx`);
+    } catch (e) {
+        console.error(e);
+        alert("Error creating document.");
+    }
+  };
+
   const EntityBadge = ({ type, threat }: { type: string, threat?: string }) => {
     const color = threat === 'Critical' ? 'bg-red-100 text-red-800 border-red-200' : threat === 'High' ? 'bg-orange-100 text-orange-800 border-orange-200' : 'bg-gray-100 text-gray-700 border-gray-200';
     return <span className={`text-[9px] uppercase font-bold px-1.5 py-0.5 rounded border ${color}`}>{type} | {threat}</span>;
@@ -129,7 +248,9 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
            <button onClick={() => setShowChat(!showChat)} className={`flex items-center gap-2 px-3 py-1.5 text-xs font-bold rounded uppercase tracking-wide ${showChat ? 'bg-uk-blue text-white' : 'text-gray-300 bg-gray-800 hover:bg-gray-700'}`}>
              <MessageSquareText className="w-3.5 h-3.5" /> Analyst Chat
            </button>
-           <button onClick={() => window.print()} className="p-2 text-gray-400 hover:text-white"><Printer className="w-4 h-4" /></button>
+           <div className="w-px h-5 bg-gray-700 mx-1"></div>
+           <button onClick={handleDownloadDocx} className="p-2 text-gray-400 hover:text-white" title="Export DOCX"><Download className="w-4 h-4" /></button>
+           <button onClick={() => window.print()} className="p-2 text-gray-400 hover:text-white" title="Print PDF"><Printer className="w-4 h-4" /></button>
         </div>
       </div>
 
