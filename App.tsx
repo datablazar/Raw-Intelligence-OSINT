@@ -114,8 +114,8 @@ const App: React.FC = () => {
              <div className="flex-1 p-6 md:p-12 overflow-y-auto">
                 <div className="max-w-3xl mx-auto space-y-8">
                   <div className="text-center space-y-2 mb-12">
-                     <h1 className="text-3xl font-bold text-uk-navy tracking-tight">Intelligence Generation Platform</h1>
-                     <p className="text-gray-500">Secure Environment. All inputs are processed locally before transmission.</p>
+                     <h1 className="text-3xl font-bold text-uk-navy tracking-tight">Intelligence Generation and Transformation Platform</h1>
+                     <p className="text-gray-500">Raw input and research environment</p>
                   </div>
                   <InputSection onGenerate={handleStartMission} isProcessing={false} />
                 </div>

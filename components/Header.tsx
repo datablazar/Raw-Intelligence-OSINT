@@ -1,5 +1,6 @@
+
 import React from 'react';
-import { ShieldCheck, FileText } from 'lucide-react';
+import { ShieldCheck, FileText, Wifi } from 'lucide-react';
 
 const Header: React.FC = () => {
   return (
@@ -11,12 +12,18 @@ const Header: React.FC = () => {
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-tight uppercase">Sentinel</h1>
-            <p className="text-xs text-gray-300 font-mono tracking-widest">UKIC INTELLIGENCE GENERATOR</p>
+            <p className="text-[10px] text-gray-400 font-mono tracking-widest uppercase">UK Intelligence Transformation Platform</p>
           </div>
         </div>
-        <div className="flex items-center gap-2 text-sm text-gray-400">
-          <FileText className="w-4 h-4" />
-          <span className="hidden sm:inline">Secure Environment: UNCLASSIFIED (Until Generated)</span>
+        <div className="flex items-center gap-4 text-sm text-gray-400">
+           <div className="hidden md:flex items-center gap-2 bg-black/20 px-3 py-1 rounded-full border border-white/5">
+              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+              <span className="text-[10px] font-mono font-bold tracking-wider text-green-500">SYSTEM ACTIVE</span>
+           </div>
+           <div className="flex items-center gap-2">
+              <FileText className="w-4 h-4" />
+              <span className="text-[10px] font-bold tracking-widest uppercase text-uk-red">SECURE // NOFORN</span>
+           </div>
         </div>
       </div>
     </header>

@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { IntelligenceReport, Classification, HistoryItem, ProcessingLog } from '../types';
-import { Printer, Download, Clock, ChevronDown, Sparkles, X, Wand2, MessageSquareText, ShieldCheck, Globe, AlertCircle, Pencil, User, MapPin, Building, Hash, Zap, Calendar, Search, Trash2, FileJson, FileText, AlertTriangle, Crosshair, ExternalLink } from 'lucide-react';
+import { IntelligenceReport, Classification, HistoryItem } from '../types';
+import { Printer, Download, Clock, ChevronDown, Sparkles, MessageSquareText, Globe, AlertCircle, Pencil, User, MapPin, Building, Hash, Zap, Crosshair, ExternalLink, ShieldAlert } from 'lucide-react';
 import { refineSection, createReportChatSession, verifyClaim, VerificationResult, conductDeepResearch } from '../services/geminiService';
 import ChatInterface from './ChatInterface';
 import { Chat } from '@google/genai';
@@ -15,9 +15,9 @@ interface ReportDisplayProps {
   onUpdateReport: (report: IntelligenceReport) => void;
   onClearHistory?: () => void;
   rawContext?: string;
-  onProcessingStart?: (logs: ProcessingLog[]) => void;
+  onProcessingStart?: (logs: any[]) => void;
   onProcessingEnd?: () => void;
-  onProcessingLog?: (msg: string, type: 'info'|'network'|'ai'|'success'|'planning'|'synthesizing') => void;
+  onProcessingLog?: (msg: string, type: any) => void;
 }
 
 const ReportDisplay: React.FC<ReportDisplayProps> = ({ 
@@ -31,109 +31,29 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
   onProcessingEnd,
   onProcessingLog
 }) => {
-  const [activeTab, setActiveTab] = useState<'report' | 'entities' | 'json'>('report');
+  const [activeTab, setActiveTab] = useState<'report' | 'entities'>('report');
   const [showHistory, setShowHistory] = useState(false);
   const [showChat, setShowChat] = useState(false);
   
-  // Refinement & Edit State
-  const [refineSectionTitle, setRefineSectionTitle] = useState<string | null>(null);
-  const [refineInstruction, setRefineInstruction] = useState("");
-  const [isRefining, setIsRefining] = useState(false);
+  // Interaction State
+  const [verifications, setVerifications] = useState<Record<string, VerificationResult>>({});
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [editSectionTitle, setEditSectionTitle] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
-  
-  // Deep Research State
   const [showResearchModal, setShowResearchModal] = useState(false);
   const [researchTopic, setResearchTopic] = useState("");
 
-  // Verification State
-  const [verifications, setVerifications] = useState<Record<string, VerificationResult & { groundingMetadata: any }>>({});
-  const [verifyingId, setVerifyingId] = useState<string | null>(null);
-
-  // Chat State
   const [chatSession, setChatSession] = useState<Chat | null>(null);
-
   const historyRef = useRef<HTMLDivElement>(null);
-  const refineInputRef = useRef<HTMLTextAreaElement>(null);
-  const footerRef = useRef<HTMLDivElement>(null);
-  const entityFooterRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (historyRef.current && !historyRef.current.contains(event.target as Node)) {
-        setShowHistory(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
 
   useEffect(() => {
     if (report) {
-      const session = createReportChatSession(report, rawContext);
-      setChatSession(session);
+      setChatSession(createReportChatSession(report, rawContext));
       setVerifications({});
-    } else {
-      setChatSession(null);
-      setShowChat(false);
     }
   }, [report?.referenceNumber]);
 
-  useEffect(() => {
-     if (refineSectionTitle) refineInputRef.current?.focus();
-  }, [refineSectionTitle]);
-
   if (!report) return null;
-
-  // Banner color logic kept in case needed elsewhere, but banner component removed from view
-  const getClassificationColor = (cls: Classification) => {
-    switch (cls) {
-      case Classification.TOP_SECRET: return 'text-red-700 border-red-700 bg-red-50';
-      case Classification.SECRET: return 'text-orange-700 border-orange-700 bg-orange-50';
-      case Classification.OFFICIAL_SENSITIVE: return 'text-blue-800 border-blue-800 bg-blue-50';
-      default: return 'text-gray-700 border-gray-700 bg-gray-50';
-    }
-  };
-
-  const handleExport = () => {
-    const element = document.createElement("a");
-    const file = new Blob([JSON.stringify(report, null, 2)], {type: 'application/json'});
-    element.href = URL.createObjectURL(file);
-    element.download = `${report.referenceNumber}.json`;
-    document.body.appendChild(element);
-    element.click();
-  };
-
-  const executeRefinement = async () => {
-    if (!refineSectionTitle || !refineInstruction.trim()) return;
-    setIsRefining(true);
-    try {
-      const newContent = await refineSection(report, refineSectionTitle, refineInstruction);
-      const updatedReport = {
-        ...report,
-        sections: report.sections.map(s => {
-          if (s.title === refineSectionTitle) {
-            // Update content AND type based on what AI returned
-            const isList = Array.isArray(newContent);
-            return { ...s, content: newContent, type: (isList ? 'list' : 'text') as 'text' | 'list' };
-          }
-          return s;
-        })
-      };
-      onUpdateReport(updatedReport);
-      setRefineSectionTitle(null);
-    } catch (err) { alert("Refinement Failed"); } finally { setIsRefining(false); }
-  };
-
-  const handleSaveEdit = () => {
-    if (!editSectionTitle) return;
-    const section = report.sections.find(s => s.title === editSectionTitle);
-    if (!section) return;
-    let newValue: string | string[] = editContent;
-    if (section.type === 'list') newValue = editContent.split('\n').map(s => s.trim()).filter(s => s);
-    onUpdateReport({ ...report, sections: report.sections.map(s => s.title === editSectionTitle ? { ...s, content: newValue } : s) });
-    setEditSectionTitle(null);
-  };
 
   const handleVerify = async (text: string, id: string) => {
     if (verifyingId) return;
@@ -143,387 +63,232 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
       setVerifications(prev => ({ ...prev, [id]: result }));
     } catch (e) { console.error(e); } finally { setVerifyingId(null); }
   };
-  
-  const handleDeepResearch = async () => {
-    if (!researchTopic.trim()) return;
-    setShowResearchModal(false);
-    onProcessingStart?.([{ id: 'init', message: `Initializing Deep Research: ${researchTopic}`, type: 'info', timestamp: Date.now() }]);
-    try {
-      const combinedContext = `=== RAW INTEL ===\n${rawContext}\n=== REPORT ===\n${JSON.stringify(report)}`;
-      const result = await conductDeepResearch(researchTopic, combinedContext);
-      onProcessingLog?.(`Completed research on ${researchTopic}`, 'success');
-      
-      // Merge new links safely
-      const currentLinks = report.relevantLinks || [];
-      const newLinks = result.links.filter(nl => !currentLinks.find(cl => cl.url === nl.url));
-      
-      onUpdateReport({
+
+  const handleSaveEdit = () => {
+    if (!editSectionTitle) return;
+    const isList = report.sections.find(s => s.title === editSectionTitle)?.type === 'list';
+    const newContent = isList ? editContent.split('\n').filter(s=>s) : editContent;
+    onUpdateReport({
         ...report,
-        sections: [...report.sections, { title: result.title, type: 'text', content: result.content }],
-        relevantLinks: [...currentLinks, ...newLinks]
-      });
-      onProcessingEnd?.();
-      setResearchTopic("");
-    } catch (error) { onProcessingEnd?.(); alert("Research Failed"); }
-  };
-
-  const scrollToFooter = () => {
-    footerRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-  
-  const scrollToEntities = () => {
-    entityFooterRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
-  // Helper to strip markdown artifacts
-  const cleanSectionContent = (content: string) => {
-    return content
-      // Remove header-style lines (e.g., ### Title or **SECTION: Title**)
-      .replace(/^#{1,6}\s*.*$/gm, '')
-      .replace(/^\*\*SECTION:.*$/gim, '')
-      .replace(/^SECTION:.*$/gim, '')
-      .trim();
-  };
-
-  const renderTextWithEntities = (text: string, keyPrefix: any) => {
-      if (!report.entities || report.entities.length === 0) return text;
-      
-      const sortedEntities = [...report.entities].map((e, i) => ({...e, idx: i})).sort((a, b) => b.name.length - a.name.length);
-      const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = new RegExp(`(${sortedEntities.map(e => escapeRegExp(e.name)).join('|')})`, 'gi');
-      
-      const parts = text.split(pattern);
-      if (parts.length === 1) return text;
-
-      return (
-        <React.Fragment key={keyPrefix}>
-            {parts.map((subPart, j) => {
-                const matchedEntity = sortedEntities.find(e => e.name.toLowerCase() === subPart.toLowerCase());
-                if (matchedEntity) {
-                    return (
-                        <span key={j} onClick={scrollToEntities} className="group/entity relative border-b border-dotted border-gray-400 hover:bg-yellow-50 hover:border-yellow-400 transition-colors cursor-pointer" title={`${matchedEntity.type}: ${matchedEntity.threatLevel || 'Unknown'} Threat`}>
-                            {subPart}
-                            <sup className="text-[9px] font-bold text-gray-500 ml-0.5 select-none hover:text-uk-red">
-                                E{matchedEntity.idx + 1}
-                            </sup>
-                        </span>
-                    );
-                }
-                return subPart;
-            })}
-        </React.Fragment>
-      );
-  };
-
-  const renderEnrichedContent = (content: string | any) => {
-    if (typeof content !== 'string') {
-        if (Array.isArray(content)) {
-            return renderEnrichedContent(content.join('\n'));
-        }
-        return String(content || "");
-    }
-
-    // Clean artifacts first
-    const cleaned = cleanSectionContent(content);
-
-    const urlRegex = /(https?:\/\/[^\s]+)/g;
-    const parts = cleaned.split(urlRegex);
-    
-    return parts.map((part, i) => {
-      if (part.match(urlRegex)) {
-        const cleanUrl = part.replace(/[.,;)]$/, '');
-        const punctuation = part.slice(cleanUrl.length);
-        
-        const idx = report.relevantLinks?.findIndex(l => l.url === cleanUrl);
-        
-        if (idx !== undefined && idx !== -1) {
-           return (
-             <React.Fragment key={i}>
-               <button 
-                 onClick={scrollToFooter}
-                 className="inline-flex items-center justify-center align-top text-[10px] font-bold text-white bg-uk-blue rounded-full w-4 h-4 ml-0.5 hover:bg-uk-navy transition-colors transform -translate-y-1"
-                 title={`Source: ${report.relevantLinks![idx].title || cleanUrl}`}
-               >
-                 {idx + 1}
-               </button>
-               {punctuation}
-             </React.Fragment>
-           );
-        }
-        return <a key={i} href={part} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline break-all">{part}</a>;
-      } else {
-        return renderTextWithEntities(part, i);
-      }
+        sections: report.sections.map(s => s.title === editSectionTitle ? { ...s, content: newContent } : s)
     });
+    setEditSectionTitle(null);
+  };
+
+  const handleDeepResearch = async () => {
+    if (!researchTopic) return;
+    setShowResearchModal(false);
+    onProcessingStart?.([{ id: 'init', message: `Executing deep research on: ${researchTopic}`, type: 'network', timestamp: Date.now() }]);
+    try {
+        const result = await conductDeepResearch(researchTopic, rawContext + JSON.stringify(report));
+        const newLinks = result.links.filter(nl => !report.relevantLinks?.find(cl => cl.url === nl.url));
+        onUpdateReport({
+            ...report,
+            sections: [...report.sections, { title: result.title, type: 'text', content: result.content }],
+            relevantLinks: [...(report.relevantLinks || []), ...newLinks]
+        });
+        onProcessingEnd?.();
+    } catch { onProcessingEnd?.(); alert("Research failed."); }
   };
 
   const EntityBadge = ({ type, threat }: { type: string, threat?: string }) => {
-     const getIcon = () => {
-       switch(type) {
-         case 'Person': return <User className="w-3 h-3" />;
-         case 'Location': return <MapPin className="w-3 h-3" />;
-         case 'Organization': return <Building className="w-3 h-3" />;
-         case 'Cyber': return <Hash className="w-3 h-3" />;
-         case 'Weapon': return <Zap className="w-3 h-3" />;
-         default: return <AlertCircle className="w-3 h-3" />;
-       }
-     };
-     const getThreatColor = () => {
-       switch(threat) {
-         case 'Critical': return 'bg-red-100 text-red-800 border-red-200';
-         case 'High': return 'bg-orange-100 text-orange-800 border-orange-200';
-         case 'Medium': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
-         default: return 'bg-gray-100 text-gray-700 border-gray-200';
-       }
-     };
-     return (
-       <span className={`text-[10px] uppercase font-bold px-2 py-1 rounded border flex items-center gap-1.5 w-fit ${getThreatColor()}`}>
-         {getIcon()} {type} {threat && `| ${threat}`}
-       </span>
-     );
+    const color = threat === 'Critical' ? 'bg-red-100 text-red-800 border-red-200' : threat === 'High' ? 'bg-orange-100 text-orange-800 border-orange-200' : 'bg-gray-100 text-gray-700 border-gray-200';
+    return <span className={`text-[9px] uppercase font-bold px-1.5 py-0.5 rounded border ${color}`}>{type} | {threat}</span>;
   };
 
   return (
-    <div className="flex flex-col h-full bg-gray-100 overflow-hidden relative">
+    <div className="flex flex-col h-full bg-gray-950 overflow-hidden relative">
       
-      {/* Top Toolbar */}
-      <div className="bg-white px-4 py-2 border-b border-gray-200 flex justify-between items-center no-print shadow-sm z-20">
-        <div className="flex items-center gap-2">
-          {/* History Dropdown */}
+      {/* Toolbar */}
+      <div className="bg-gray-900 border-b border-gray-800 px-4 py-3 flex justify-between items-center no-print flex-shrink-0 z-20">
+        <div className="flex items-center gap-3">
           <div className="relative" ref={historyRef}>
-            <button onClick={() => setShowHistory(!showHistory)} className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold text-uk-navy bg-gray-100 hover:bg-gray-200 rounded transition-colors uppercase tracking-wider">
-              <Clock className="w-3.5 h-3.5" /> <span>Files ({history.length})</span> <ChevronDown className="w-3 h-3" />
+            <button onClick={() => setShowHistory(!showHistory)} className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold text-gray-300 bg-gray-800 hover:bg-gray-700 rounded transition-colors uppercase tracking-wider">
+              <Clock className="w-3.5 h-3.5" /> <span>History</span> <ChevronDown className="w-3 h-3" />
             </button>
             {showHistory && (
-               <div className="absolute left-0 mt-2 w-72 bg-white rounded shadow-xl border border-gray-200 z-50 max-h-96 overflow-y-auto">
-                  <div className="p-2 border-b flex justify-between items-center bg-gray-50"><span className="text-[10px] font-bold text-gray-500 uppercase">Recent Ops</span>
-                  {onClearHistory && <button onClick={onClearHistory} className="text-red-500 hover:text-red-700"><Trash2 className="w-3 h-3"/></button>}</div>
+               <div className="absolute left-0 mt-2 w-72 bg-gray-800 border border-gray-700 rounded shadow-2xl z-50 max-h-96 overflow-y-auto">
                   {history.slice().reverse().map(item => (
-                    <button key={item.id} onClick={() => { onSelectReport(item.id); setShowHistory(false); }} className="w-full text-left px-4 py-3 hover:bg-blue-50 border-b border-gray-50">
-                       <p className="text-xs font-bold text-gray-900 truncate">{item.report.reportTitle}</p>
-                       <p className="text-[10px] text-gray-400">{new Date(item.timestamp).toLocaleString()}</p>
+                    <button key={item.id} onClick={() => { onSelectReport(item.id); setShowHistory(false); }} className="w-full text-left px-4 py-3 hover:bg-gray-700 border-b border-gray-700 last:border-0">
+                       <p className="text-xs font-bold text-gray-200 truncate">{item.report.reportTitle}</p>
+                       <p className="text-[10px] text-gray-500">{new Date(item.timestamp).toLocaleString()}</p>
                     </button>
                   ))}
                </div>
             )}
           </div>
-          
-          <div className="h-6 w-px bg-gray-200 mx-2"></div>
-          
-          {/* Tabs */}
-          <div className="flex bg-gray-100 rounded p-1">
-            {['report', 'entities', 'json'].map((t) => (
-              <button key={t} onClick={() => setActiveTab(t as any)} 
-                className={`px-3 py-1 rounded text-xs font-bold uppercase transition-all ${activeTab === t ? 'bg-white text-uk-blue shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
-                {t}
-              </button>
-            ))}
-          </div>
+          <div className="h-5 w-px bg-gray-700"></div>
+          <button onClick={() => setActiveTab('report')} className={`px-3 py-1.5 rounded text-xs font-bold uppercase ${activeTab === 'report' ? 'bg-uk-blue text-white' : 'text-gray-400 hover:text-white'}`}>Report</button>
+          <button onClick={() => setActiveTab('entities')} className={`px-3 py-1.5 rounded text-xs font-bold uppercase ${activeTab === 'entities' ? 'bg-uk-blue text-white' : 'text-gray-400 hover:text-white'}`}>Entities</button>
         </div>
 
-        <div className="flex items-center gap-2">
-           <button onClick={() => setShowResearchModal(true)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-uk-blue border border-uk-blue/30 rounded hover:bg-blue-50 transition-colors uppercase tracking-wide">
-             <Globe className="w-3.5 h-3.5" /> Research
+        <div className="flex items-center gap-3">
+           <button onClick={() => setShowResearchModal(true)} className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold text-uk-blue border border-uk-blue/30 rounded hover:bg-uk-blue/10 uppercase tracking-wide">
+             <Globe className="w-3.5 h-3.5" /> Extend Research
            </button>
-           <button onClick={() => setShowChat(!showChat)} className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded transition-colors uppercase tracking-wide ${showChat ? 'bg-uk-navy text-white' : 'text-gray-600 bg-gray-100 hover:bg-gray-200'}`}>
-             <MessageSquareText className="w-3.5 h-3.5" /> Analyst
+           <button onClick={() => setShowChat(!showChat)} className={`flex items-center gap-2 px-3 py-1.5 text-xs font-bold rounded uppercase tracking-wide ${showChat ? 'bg-uk-blue text-white' : 'text-gray-300 bg-gray-800 hover:bg-gray-700'}`}>
+             <MessageSquareText className="w-3.5 h-3.5" /> Analyst Chat
            </button>
-           <div className="h-6 w-px bg-gray-200 mx-1"></div>
-           <button onClick={() => window.print()} className="p-1.5 text-gray-500 hover:text-uk-navy"><Printer className="w-4 h-4" /></button>
-           <button onClick={handleExport} className="p-1.5 text-gray-500 hover:text-uk-navy"><Download className="w-4 h-4" /></button>
+           <button onClick={() => window.print()} className="p-2 text-gray-400 hover:text-white"><Printer className="w-4 h-4" /></button>
         </div>
       </div>
 
       <div className="flex flex-1 overflow-hidden relative">
-        {/* Main Content */}
-        <div className="flex-1 overflow-y-auto bg-gray-200/50 p-4 md:p-8 flex justify-center">
+        
+        {/* Main Workspace */}
+        <div className="flex-1 overflow-y-auto bg-gray-950 p-4 md:p-12 flex justify-center">
           
-          {/* VIEW: REPORT */}
+          {/* --- PAPER VIEW --- */}
           {activeTab === 'report' && (
-            <div className="bg-white w-full max-w-[210mm] min-h-[297mm] shadow-lg p-12 text-gray-900 font-sans relative">
-               
-               {/* 
-                 REMOVED TOP CLASSIFICATION BANNER AS REQUESTED 
-                 The user explicitly asked to "Remove this" pointing to the top banner.
-               */}
-               <div className="mb-4">
-                  {/* Minimal top classification text instead of big banner, or nothing if strict removal is needed. 
-                      Keeping a very subtle indicator for print mode only if needed, but for now completely removing the block. */}
-               </div>
-
-               {/* Meta Table */}
-               <div className="grid grid-cols-2 gap-y-2 text-sm font-sans border-b border-gray-100 pb-6 mb-8">
-                  <div className="flex flex-col">
-                    <span className="text-[10px] text-gray-400 font-bold uppercase">Classification</span>
-                    <span className="font-bold text-uk-navy">{report.classification}</span>
-                  </div>
-                  <div className="flex flex-col text-right"><span className="text-[10px] text-gray-400 font-bold uppercase">Date</span><span className="font-mono">{report.dateOfInformation}</span></div>
-                  <div className="col-span-2 mt-4"><span className="text-[10px] text-gray-400 font-bold uppercase">Subject</span><span className="font-bold text-xl text-uk-navy block leading-tight">{report.reportTitle.replace(/^INTREP:?\s*/i, '')}</span></div>
-               </div>
-
-               {/* Executive Summary */}
-               <div className="mb-8 bg-gray-50 p-6 border-l-4 border-uk-blue rounded-r-lg">
-                 <h3 className="font-sans font-bold text-xs uppercase text-uk-blue mb-2 tracking-wider">Executive Summary</h3>
-                 <p className="text-sm leading-relaxed font-medium break-words text-justify">{renderEnrichedContent(report.executiveSummary)}</p>
-               </div>
-
-               {/* Sections */}
-               {report.sections.map((section, idx) => {
-                 // Determine explicit rendering mode based on data type, not just declared type
-                 const isListContent = Array.isArray(section.content);
+            <div className="bg-white w-full max-w-[210mm] min-h-[297mm] shadow-2xl relative text-black font-serif print:shadow-none print:w-full print:max-w-none print:m-0 print:p-0 flex flex-col">
+              
+              <div className="p-12 md:p-16 print:p-12 flex-grow">
                  
-                 return (
-                 <div key={idx} className="mb-8 group relative">
-                   <div className="absolute -right-8 top-0 opacity-0 group-hover:opacity-100 flex flex-col gap-1 no-print">
-                      <button onClick={() => { setEditSectionTitle(section.title); setEditContent(Array.isArray(section.content) ? section.content.join('\n') : section.content); }} className="p-1.5 bg-gray-100 rounded hover:bg-blue-100 text-blue-600"><Pencil className="w-3 h-3"/></button>
-                      <button onClick={() => { setRefineSectionTitle(section.title); setRefineInstruction(""); }} className="p-1.5 bg-gray-100 rounded hover:bg-purple-100 text-purple-600"><Sparkles className="w-3 h-3"/></button>
-                   </div>
-                   <h3 className="font-sans font-bold text-sm uppercase text-uk-navy mb-3 flex items-center gap-2 border-b border-gray-100 pb-2">
-                     <span className="text-gray-400">{idx + 1}.</span> {section.title}
-                   </h3>
-                   {isListContent ? (
-                     <ul className="list-disc pl-5 space-y-3 text-sm leading-relaxed">
-                       {(section.content as string[]).map((item, i) => (
-                         <li key={i} className="group/item relative pl-1 break-words">
-                           <span>{renderEnrichedContent(item)}</span>
-                           <button onClick={() => handleVerify(item, `v-${idx}-${i}`)} className="ml-2 opacity-0 group-hover/item:opacity-100 text-[10px] uppercase font-bold text-uk-blue hover:underline bg-blue-50 px-1 rounded">Verify</button>
-                           {verifications[`v-${idx}-${i}`] && (
-                             <div className={`mt-1 p-2 text-xs border-l-2 ${verifications[`v-${idx}-${i}`].status === 'Verified' ? 'border-green-500 bg-green-50' : 'border-red-500 bg-red-50'}`}>
-                               {verifications[`v-${idx}-${i}`].explanation}
-                             </div>
-                           )}
-                         </li>
-                       ))}
-                     </ul>
-                   ) : (
-                     <p className="text-sm leading-relaxed whitespace-pre-wrap break-words text-justify">{renderEnrichedContent(section.content)}</p>
-                   )}
+                 {/* Header Meta */}
+                 <div className="border-b-2 border-black pb-6 mb-8">
+                    <h1 className="text-2xl font-bold uppercase tracking-wide leading-tight mb-2 font-sans">{report.reportTitle}</h1>
+                    <div className="flex justify-between items-end text-xs font-sans uppercase text-gray-500 font-bold tracking-wider">
+                       <span>Intelligence Assessment</span>
+                       <span>Date: {report.dateOfInformation}</span>
+                    </div>
                  </div>
-               )})}
 
-               {/* Entity Footnotes */}
-               {report.entities && report.entities.length > 0 && (
-                 <div className="mt-12 border-t border-gray-200 pt-8 page-break-inside-avoid" ref={entityFooterRef}>
-                    <h4 className="font-sans font-bold text-sm uppercase text-uk-navy mb-4 flex items-center gap-2">
-                      <Crosshair className="w-4 h-4" /> Entity Profiles
-                    </h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {report.entities.map((ent, i) => (
-                        <div key={i} className="flex gap-3 text-xs p-3 rounded bg-gray-50/50 hover:bg-gray-100 border border-transparent hover:border-gray-200 transition-colors">
-                           <span className="flex-shrink-0 text-[10px] font-bold text-gray-400 select-none">E{i + 1}</span>
-                           <div>
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className="font-bold text-gray-900">{ent.name}</span>
-                                <EntityBadge type={ent.type} threat={ent.threatLevel} />
-                              </div>
-                              <p className="text-gray-600 leading-snug break-words">{ent.context}</p>
-                           </div>
+                 {/* Executive Summary */}
+                 <div className="bg-gray-100 p-6 mb-10 border-l-4 border-black font-sans print-bg-force break-inside-avoid">
+                    <h3 className="font-bold text-xs uppercase mb-3 tracking-wider text-gray-900">Executive Summary (BLUF)</h3>
+                    <p className="text-sm leading-relaxed font-medium text-gray-900 text-justify">{report.executiveSummary}</p>
+                 </div>
+
+                 {/* Sections */}
+                 <div className="space-y-8">
+                    {report.sections.map((section, idx) => (
+                        <div key={idx} className="group relative break-inside-avoid">
+                            {/* Hover Tools */}
+                            <div className="absolute -left-12 top-0 hidden group-hover:flex flex-col gap-1 no-print">
+                                <button onClick={() => { setEditSectionTitle(section.title); setEditContent(Array.isArray(section.content) ? section.content.join('\n') : section.content); }} className="p-1.5 bg-gray-200 hover:bg-uk-blue hover:text-white rounded shadow transition-colors"><Pencil className="w-3 h-3"/></button>
+                            </div>
+
+                            <h2 className="font-sans font-bold text-sm uppercase border-b border-gray-300 pb-1 mb-3 flex items-center gap-2 text-gray-900">
+                                <span className="text-uk-blue print:text-black">{idx + 1}.0</span> {section.title}
+                            </h2>
+
+                            {Array.isArray(section.content) ? (
+                                <ul className="list-disc ml-4 pl-2 space-y-2 text-sm leading-relaxed text-justify text-gray-800 marker:text-gray-400">
+                                    {section.content.map((item, i) => (
+                                        <li key={i} className="pl-1 group/item relative">
+                                            <span>{item}</span>
+                                            <button onClick={() => handleVerify(item, `${idx}-${i}`)} className="ml-2 text-[10px] font-bold text-uk-blue opacity-0 group-hover/item:opacity-100 hover:underline uppercase no-print transition-opacity">Verify</button>
+                                            {verifications[`${idx}-${i}`] && (
+                                                <div className={`mt-2 text-xs p-2 no-print rounded ${verifications[`${idx}-${i}`].status === 'Verified' ? 'bg-green-50 text-green-800 border border-green-100' : 'bg-red-50 text-red-800 border border-red-100'}`}>
+                                                    <strong>{verifications[`${idx}-${i}`].status}:</strong> {verifications[`${idx}-${i}`].explanation}
+                                                </div>
+                                            )}
+                                        </li>
+                                    ))}
+                                </ul>
+                            ) : (
+                                <p className="text-sm leading-relaxed text-justify whitespace-pre-wrap text-gray-800">{section.content}</p>
+                            )}
                         </div>
-                      ))}
-                    </div>
+                    ))}
                  </div>
-               )}
 
-               {/* Detailed References Footer */}
-               {report.relevantLinks && report.relevantLinks.length > 0 && (
-                 <div className="mt-12 border-t border-gray-200 pt-8" ref={footerRef}>
-                   <h4 className="font-sans font-bold text-sm uppercase text-uk-navy mb-4 flex items-center gap-2">
-                     <Globe className="w-4 h-4" /> Intelligence Sources
-                   </h4>
-                   <div className="space-y-4">
-                     {report.relevantLinks.map((link, i) => (
-                       <div key={i} className="flex gap-3 text-sm group">
-                         <span className="flex-shrink-0 flex items-center justify-center w-6 h-6 bg-gray-100 text-gray-500 font-bold text-xs rounded-full">
-                           {i + 1}
-                         </span>
-                         <div className="flex-1 min-w-0">
-                           <div className="flex items-baseline gap-2">
-                             <a href={link.url} target="_blank" rel="noreferrer" className="font-bold text-uk-blue hover:underline">
-                               {link.title || link.url}
-                             </a>
-                             <a href={link.url} target="_blank" rel="noreferrer" className="text-gray-400 hover:text-gray-600">
-                               <ExternalLink className="w-3 h-3" />
-                             </a>
-                           </div>
-                           <p className="text-xs text-gray-600 mt-0.5 break-words">{link.summary || "No summary available."}</p>
-                           <p className="text-[10px] text-gray-400 font-mono mt-1 break-all">{link.url}</p>
+                 {/* Footnotes / Sources */}
+                 {report.relevantLinks && report.relevantLinks.length > 0 && (
+                     <div className="mt-16 pt-8 border-t border-gray-300 font-sans break-inside-avoid">
+                         <h3 className="text-xs font-bold uppercase mb-4 text-gray-400 tracking-wider">Appendix A: Source Manifest</h3>
+                         <div className="space-y-3">
+                             {report.relevantLinks.map((link, i) => (
+                                 <div key={i} className="flex gap-3 text-xs text-gray-600">
+                                     <span className="font-mono text-gray-400 font-bold select-none">[{i+1}]</span>
+                                     <div className="flex-1">
+                                        <a href={link.url} target="_blank" className="hover:text-uk-blue hover:underline font-bold text-gray-800 block mb-0.5 print:no-underline print:text-black">{link.title || "External Source"}</a>
+                                        <p className="text-gray-500 leading-tight">{link.summary || "No summary available."}</p>
+                                        <span className="text-[10px] text-gray-400 truncate block mt-0.5 print:text-[9px]">{link.url}</span>
+                                     </div>
+                                 </div>
+                             ))}
                          </div>
-                       </div>
-                     ))}
-                   </div>
-                 </div>
-               )}
-            </div>
-          )}
+                     </div>
+                 )}
 
-          {/* VIEW: ENTITIES */}
-          {activeTab === 'entities' && (
-            <div className="w-full max-w-4xl space-y-4">
-              {report.entities.map((ent, i) => (
-                <div key={i} className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 flex items-start gap-4">
-                  <div className={`p-3 rounded-full ${ent.threatLevel === 'Critical' ? 'bg-red-100 text-red-600' : 'bg-gray-100 text-gray-600'}`}>
-                     <Crosshair className="w-6 h-6" />
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <h3 className="font-bold text-gray-900 text-lg">{ent.name}</h3>
-                        <EntityBadge type={ent.type} threat={ent.threatLevel} />
-                      </div>
+                 {/* Entities Footer */}
+                 {report.entities && report.entities.length > 0 && (
+                    <div className="mt-8 pt-8 border-t border-gray-300 font-sans break-inside-avoid">
+                        <h3 className="text-xs font-bold uppercase mb-4 text-gray-400 tracking-wider">Appendix B: Key Entities</h3>
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                            {report.entities.map((e, i) => (
+                                <div key={i} className="p-2 bg-gray-50 border border-gray-100 rounded print:border-gray-300">
+                                    <div className="flex justify-between items-start mb-1">
+                                        <span className="font-bold text-xs text-gray-800">{e.name}</span>
+                                        <span className="text-[9px] uppercase font-bold text-gray-400">{e.type}</span>
+                                    </div>
+                                    <div className="text-[10px] text-gray-500 leading-tight">{e.context.substring(0, 80)}...</div>
+                                </div>
+                            ))}
+                        </div>
                     </div>
-                    <p className="mt-2 text-sm text-gray-600 leading-relaxed bg-gray-50 p-3 rounded">{ent.context}</p>
-                  </div>
-                </div>
-              ))}
+                 )}
+
+              </div>
+              
+              {/* Paper Footer (Space for classification if needed later, but kept empty for now) */}
+              <div className="h-12 w-full"></div>
             </div>
           )}
 
-          {/* VIEW: JSON */}
-          {activeTab === 'json' && (
-            <div className="w-full max-w-4xl bg-gray-900 rounded-lg shadow-lg p-6 overflow-hidden">
-               <pre className="text-green-400 font-mono text-xs overflow-x-auto whitespace-pre-wrap">{JSON.stringify(report, null, 2)}</pre>
-            </div>
+          {/* --- ENTITIES VIEW --- */}
+          {activeTab === 'entities' && (
+             <div className="w-full max-w-5xl grid grid-cols-1 md:grid-cols-2 gap-4">
+                {report.entities.map((ent, i) => (
+                    <div key={i} className="bg-gray-900 border border-gray-800 p-4 rounded-lg shadow-lg flex flex-col gap-3">
+                        <div className="flex justify-between items-start">
+                            <h3 className="font-bold text-gray-100 text-lg">{ent.name}</h3>
+                            <EntityBadge type={ent.type} threat={ent.threatLevel} />
+                        </div>
+                        <p className="text-sm text-gray-400 leading-relaxed bg-black/30 p-3 rounded border border-gray-800/50">{ent.context}</p>
+                    </div>
+                ))}
+             </div>
           )}
+
         </div>
 
-        {/* Chat Sidebar */}
-        <div className={`bg-white border-l border-gray-200 shadow-2xl z-30 transition-all duration-300 ease-in-out ${showChat ? 'w-96' : 'w-0 overflow-hidden opacity-0'}`}>
-           <ChatInterface chatSession={chatSession} report={report} onUpdateReport={onUpdateReport} className="h-full" onClose={() => setShowChat(false)} />
+        {/* Chat Drawer */}
+        <div className={`bg-white border-l border-gray-200 shadow-2xl z-30 transition-all duration-300 no-print ${showChat ? 'w-96' : 'w-0 overflow-hidden'}`}>
+           <ChatInterface chatSession={chatSession} report={report} onUpdateReport={onUpdateReport} onClose={() => setShowChat(false)} className="h-full" />
         </div>
       </div>
 
-      {/* --- MODALS (Edit/Refine/Research) --- */}
-      {/* Kept simple for brevity, logic exists in handles */}
-      {showResearchModal && (
-        <div className="absolute inset-0 z-50 bg-uk-navy/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white w-full max-w-lg rounded-xl shadow-2xl p-6">
-            <h3 className="font-bold text-lg mb-4 flex items-center gap-2"><Globe className="w-5 h-5 text-uk-blue"/> Targeted Research</h3>
-            <input autoFocus value={researchTopic} onChange={e => setResearchTopic(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleDeepResearch()} className="w-full p-3 border rounded mb-4" placeholder="Enter topic..." />
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setShowResearchModal(false)} className="px-4 py-2 text-gray-600">Cancel</button>
-              <button onClick={handleDeepResearch} className="px-4 py-2 bg-uk-blue text-white rounded">Execute</button>
-            </div>
+      {/* Edit Modal */}
+      {editSectionTitle && (
+          <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-8 no-print">
+              <div className="bg-white w-full max-w-3xl rounded-lg p-6 flex flex-col h-3/4 shadow-2xl">
+                  <h3 className="font-bold text-lg mb-4 text-gray-900">Editing: {editSectionTitle}</h3>
+                  <textarea value={editContent} onChange={e => setEditContent(e.target.value)} className="flex-1 p-4 border border-gray-300 rounded font-serif text-sm resize-none focus:outline-none focus:ring-2 focus:ring-uk-blue text-gray-900" />
+                  <div className="mt-4 flex justify-end gap-3">
+                      <button onClick={() => setEditSectionTitle(null)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">Cancel</button>
+                      <button onClick={handleSaveEdit} className="px-4 py-2 bg-uk-blue text-white rounded font-bold uppercase text-xs">Save Changes</button>
+                  </div>
+              </div>
           </div>
-        </div>
       )}
 
-      {/* Edit Modal (Generic) */}
-      {(editSectionTitle || refineSectionTitle) && (
-        <div className="absolute inset-0 z-50 bg-uk-navy/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white w-full max-w-2xl rounded-xl shadow-2xl p-6 flex flex-col max-h-[80vh]">
-            <h3 className="font-bold mb-4">{editSectionTitle ? `Edit: ${editSectionTitle}` : `Refine: ${refineSectionTitle}`}</h3>
-            {editSectionTitle ? (
-              <textarea value={editContent} onChange={e => setEditContent(e.target.value)} className="flex-1 p-3 border rounded mb-4 font-mono text-sm" />
-            ) : (
-              <textarea value={refineInstruction} onChange={e => setRefineInstruction(e.target.value)} placeholder="Enter instructions..." className="h-32 p-3 border rounded mb-4" />
-            )}
-            <div className="flex justify-end gap-2">
-              <button onClick={() => { setEditSectionTitle(null); setRefineSectionTitle(null); }} className="px-4 py-2 text-gray-600">Cancel</button>
-              <button onClick={editSectionTitle ? handleSaveEdit : executeRefinement} className="px-4 py-2 bg-uk-blue text-white rounded">{isRefining ? 'Processing...' : 'Apply'}</button>
-            </div>
+      {/* Research Modal */}
+      {showResearchModal && (
+          <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-8 no-print">
+              <div className="bg-gray-900 border border-gray-700 w-full max-w-lg rounded-lg p-6 shadow-2xl">
+                  <h3 className="font-bold text-white mb-2 flex items-center gap-2"><Globe className="w-5 h-5 text-uk-blue"/> Extend Research</h3>
+                  <p className="text-gray-400 text-xs mb-4">Launch a new autonomous agent to research a specific topic and append it to the report.</p>
+                  <input autoFocus value={researchTopic} onChange={e => setResearchTopic(e.target.value)} placeholder="e.g. Financial backing of the group..." className="w-full p-3 bg-black border border-gray-700 rounded text-white mb-4 focus:border-uk-blue outline-none" onKeyDown={e => e.key === 'Enter' && handleDeepResearch()} />
+                  <div className="flex justify-end gap-3">
+                      <button onClick={() => setShowResearchModal(false)} className="px-4 py-2 text-gray-400 hover:text-white">Cancel</button>
+                      <button onClick={handleDeepResearch} className="px-4 py-2 bg-uk-blue text-white rounded font-bold uppercase text-xs">Execute Agent</button>
+                  </div>
+              </div>
           </div>
-        </div>
       )}
+
     </div>
   );
 };

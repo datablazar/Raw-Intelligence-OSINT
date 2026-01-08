@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, X, FileImage, FileAudio, FileVideo, Sparkles, Globe, BrainCircuit } from 'lucide-react';
+import { Send, Paperclip, X, FileImage, Sparkles, Globe, BrainCircuit } from 'lucide-react';
 import { Chat } from "@google/genai";
 import { Attachment, ChatMessage, IntelligenceReport } from '../types';
 import { sendChatMessage, performSearchQuery } from '../services/geminiService';
@@ -11,6 +11,13 @@ interface ChatInterfaceProps {
   onUpdateReport: (report: IntelligenceReport) => void;
   className?: string;
   onClose?: () => void;
+}
+
+interface FunctionArgs {
+    sectionTitle?: string;
+    content?: string;
+    urls?: string[];
+    query?: string;
 }
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ chatSession, report, onUpdateReport, className, onClose }) => {
@@ -56,6 +63,49 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ chatSession, report, onUp
     }
   };
 
+  const processToolCall = async (call: any, currentReport: IntelligenceReport | null): Promise<{ reportUpdated: boolean, updatedReport: IntelligenceReport | null, message: string, result: any }> => {
+      const args = call.args as FunctionArgs;
+      
+      if (call.name === 'edit_report_section' && currentReport && args.sectionTitle && args.content) {
+          const updatedReport = { ...currentReport, sections: [...currentReport.sections] };
+          const sectionIndex = updatedReport.sections.findIndex(s => s.title.toLowerCase() === args.sectionTitle?.toLowerCase());
+          
+          let contentData: string | string[] = args.content;
+          if (String(args.content).includes('\n') || String(args.content).trim().startsWith('-')) {
+             contentData = String(args.content).split('\n').map(s => s.replace(/^[•-]\s*/, '').trim()).filter(s => s);
+          }
+
+          if (sectionIndex >= 0) {
+              updatedReport.sections[sectionIndex] = { ...updatedReport.sections[sectionIndex], content: contentData };
+              return { reportUpdated: true, updatedReport, message: `Updated section [${args.sectionTitle}]`, result: "Success" };
+          } else {
+              updatedReport.sections.push({ 
+                  title: args.sectionTitle, 
+                  type: Array.isArray(contentData) ? 'list' : 'text', 
+                  content: contentData 
+              });
+              return { reportUpdated: true, updatedReport, message: `Created section [${args.sectionTitle}]`, result: "Success" };
+          }
+      }
+
+      if (call.name === 'add_sources_to_report' && currentReport && args.urls) {
+          const updatedReport = { ...currentReport };
+          const existingUrls = new Set(updatedReport.relevantLinks?.map(l => l.url) || []);
+          const newLinks = args.urls.filter(u => !existingUrls.has(u)).map(u => ({
+              url: u, title: 'Manually Added Source', summary: 'Added via analyst chat.'
+          }));
+          updatedReport.relevantLinks = [...(updatedReport.relevantLinks || []), ...newLinks];
+          return { reportUpdated: true, updatedReport, message: `Added ${newLinks.length} new source(s)`, result: "Success" };
+      }
+
+      if (call.name === 'search_google' && args.query) {
+          const result = await performSearchQuery(args.query);
+          return { reportUpdated: false, updatedReport: null, message: "", result };
+      }
+
+      return { reportUpdated: false, updatedReport: null, message: "", result: "Unknown Tool" };
+  };
+
   const handleSend = async () => {
     if ((!input.trim() && attachments.length === 0) || !chatSession) return;
 
@@ -77,103 +127,33 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ chatSession, report, onUp
       let botText = response.text || "";
       let grounding = response.candidates?.[0]?.groundingMetadata;
 
-      // Tool handling (Edit/Create Report Section & Add Sources & Search)
+      // Handle Tool Calls
       const functionCalls = response.candidates?.[0]?.content?.parts?.filter(p => p.functionCall).map(p => p.functionCall);
-
+      
       if (functionCalls && functionCalls.length > 0) {
-        let reportUpdated = false;
-        let updatedReport = report ? { ...report } : null;
-        let actionMessages: string[] = [];
+        let currentReportState = report;
+        const toolOutputs: string[] = [];
 
         for (const call of functionCalls) {
-          
-          // TOOL: Edit Report Section
-          if (call.name === 'edit_report_section' && updatedReport) {
-            const { sectionTitle, content } = call.args as any;
+            const { reportUpdated, updatedReport, message, result } = await processToolCall(call, currentReportState);
             
-            // Check for existing section (case-insensitive)
-            const sectionIndex = updatedReport.sections.findIndex(s => s.title.toLowerCase() === sectionTitle.toLowerCase());
-            
-            let updatedSections = [...updatedReport.sections];
-            let operationStatus = "Updated";
-
-            if (sectionIndex >= 0) {
-              // Update existing section
-              const existingSection = updatedSections[sectionIndex];
-              let newContent: any = content;
-              if (existingSection.type === 'list') {
-                 newContent = String(content).split('\n').map(s => s.replace(/^[•-]\s*/, '').trim()).filter(s => s);
-              }
-              updatedSections[sectionIndex] = { ...existingSection, content: newContent };
-              operationStatus = "Updated";
-            } else {
-              // Create NEW section
-              const contentStr = String(content);
-              const isList = contentStr.includes('\n') || contentStr.trim().startsWith('-');
-              const newContent = isList 
-                  ? contentStr.split('\n').map(s => s.replace(/^[•-]\s*/, '').trim()).filter(s => s)
-                  : contentStr;
-              
-              updatedSections.push({
-                  title: sectionTitle,
-                  type: isList ? 'list' : 'text',
-                  content: newContent
-              });
-              operationStatus = "Created";
+            if (reportUpdated && updatedReport) {
+                currentReportState = updatedReport;
+                toolOutputs.push(message);
             }
-            updatedReport.sections = updatedSections;
-            reportUpdated = true;
-            actionMessages.push(`${operationStatus} section [${sectionTitle}]`);
-            
-            await chatSession.sendMessage({
-              message: [{ functionResponse: { name: call.name, response: { result: "Success" }, id: call.id } }]
+
+            // Send tool response back to model
+            const res = await chatSession.sendMessage({
+                message: [{ functionResponse: { name: call.name, response: { result }, id: call.id } }]
             });
-          }
 
-          // TOOL: Add Sources
-          if (call.name === 'add_sources_to_report' && updatedReport) {
-             const { urls } = call.args as { urls: string[] };
-             if (urls && urls.length > 0) {
-                // Handle new SourceReference type
-                const existingUrls = new Set(updatedReport.relevantLinks?.map(l => l.url) || []);
-                const newLinks = urls.filter(u => !existingUrls.has(u)).map(u => ({
-                   url: u,
-                   title: 'Manually Added Source',
-                   summary: 'Added via analyst chat.'
-                }));
-
-                updatedReport.relevantLinks = [...(updatedReport.relevantLinks || []), ...newLinks];
-                reportUpdated = true;
-                actionMessages.push(`Added ${newLinks.length} new source(s)`);
-                
-                await chatSession.sendMessage({
-                  message: [{ functionResponse: { name: call.name, response: { result: "Success" }, id: call.id } }]
-                });
-             }
-          }
-
-          // TOOL: Google Search
-          if (call.name === 'search_google') {
-             const { query } = call.args as { query: string };
-             const result = await performSearchQuery(query);
-             // Send results back to the model so it can formulate a response
-             const res = await chatSession.sendMessage({
-               message: [{ functionResponse: { name: call.name, response: { result }, id: call.id } }]
-             });
-             // Capture the model's text response to the search data
-             if (res.text) {
-               botText += (botText ? "\n\n" : "") + res.text;
-             }
-             // Merge grounding metadata if the search call (or subsequent thought) produced any
-             if (res.candidates?.[0]?.groundingMetadata) {
-               grounding = res.candidates[0].groundingMetadata;
-             }
-          }
+            if (res.text) botText += (botText ? "\n\n" : "") + res.text;
+            if (res.candidates?.[0]?.groundingMetadata) grounding = res.candidates[0].groundingMetadata;
         }
 
-        if (reportUpdated && updatedReport) {
-           onUpdateReport(updatedReport);
-           if (!botText) botText = actionMessages.join(". ") + ".";
+        if (currentReportState && currentReportState !== report) {
+            onUpdateReport(currentReportState);
+            if (!botText) botText = toolOutputs.join(". ") + ".";
         }
       }
 

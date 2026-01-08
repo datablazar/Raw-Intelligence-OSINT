@@ -5,27 +5,30 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sentinel - UK Intelligence Reporter</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Roboto+Mono:wght@400;500&family=Merriweather:ital,wght@0,300;0,400;0,700;1,300;1,400&display=swap" rel="stylesheet">
     <script>
       tailwind.config = {
         theme: {
           extend: {
             colors: {
               uk: {
-                navy: '#002046',
-                red: '#C8102E',
-                blue: '#005EB8',
-                slate: '#333F48',
-                paper: '#F3F4F6'
+                navy: '#0f172a', // Slate 900
+                dark: '#020617', // Slate 950
+                red: '#b91c1c',  // Red 700
+                gold: '#b45309', // Amber 700
+                blue: '#1d4ed8', // Blue 700
+                paper: '#ffffff',
+                subtle: '#f1f5f9'
               }
             },
             fontFamily: {
-              serif: ['Times New Roman', 'serif'],
+              serif: ['Merriweather', 'Times New Roman', 'serif'],
               sans: ['Inter', 'sans-serif'],
               mono: ['Roboto Mono', 'monospace'],
             },
             animation: {
-              shimmer: 'shimmer 2s infinite linear',
+              'pulse-fast': 'pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+              'shimmer': 'shimmer 2s infinite linear',
             },
             keyframes: {
               shimmer: {
@@ -39,16 +42,31 @@
     </script>
     <style>
       @media print {
-        body { background-color: white; color: black; }
+        @page { margin: 0; size: A4; }
+        body { background-color: white; color: black; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         .no-print { display: none !important; }
         .print-only { display: block !important; }
         .page-break { page-break-before: always; }
-        .page-break-inside-avoid { page-break-inside: avoid; }
+        .break-inside-avoid { page-break-inside: avoid; }
+        
+        /* Reset shadows */
+        .shadow-lg, .shadow-xl, .shadow-2xl { box-shadow: none !important; }
+        
+        /* Ensure background colors print for specific elements if needed */
+        .print-bg-force { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        
+        /* Default resets, but allow specific overrides */
+        .bg-gray-900, .bg-uk-navy { background-color: white !important; color: black !important; }
       }
-      /* Custom scrollbar for HUD */
-      .scrollbar-thin::-webkit-scrollbar { width: 6px; }
-      .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
-      .scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(0, 94, 184, 0.3); border-radius: 3px; }
+      /* Custom scrollbar */
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-track { background: #0f172a; }
+      ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+      ::-webkit-scrollbar-thumb:hover { background: #475569; }
+      
+      .paper-shadow {
+        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04), 0 0 0 1px rgba(0,0,0,0.05);
+      }
     </style>
   <script type="importmap">
 {
@@ -64,7 +82,7 @@
 }
 </script>
 </head>
-  <body class="bg-gray-100 text-gray-900 min-h-screen font-sans antialiased">
-    <div id="root"></div>
+  <body class="bg-gray-950 text-gray-100 min-h-screen font-sans antialiased overflow-hidden">
+    <div id="root" class="h-full"></div>
   </body>
 </html>

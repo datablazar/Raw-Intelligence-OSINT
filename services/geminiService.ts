@@ -13,23 +13,32 @@ import {
   STRUCTURE_SCHEMA,
   SECTION_CONTENT_SCHEMA,
   FINAL_METADATA_SCHEMA,
-  QUERIES_SCHEMA
+  QUERIES_SCHEMA,
+  DEFAULT_REPORT_STRUCTURE
 } from "../constants";
 import { IntelligenceReport, Attachment, ResearchPlan, SourceReference, Entity, ReportSection, DeepResearchResult, ReportStructure, ResearchSectionResult } from "../types";
+
+// --- SINGLETON CLIENT ---
+let clientInstance: GoogleGenAI | null = null;
 
 const getClient = () => {
   if (!process.env.API_KEY) {
     throw new Error("API Key is missing. Please ensure process.env.API_KEY is available.");
   }
-  return new GoogleGenAI({ apiKey: process.env.API_KEY });
+  if (!clientInstance) {
+    clientInstance = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  }
+  return clientInstance;
 };
 
+// --- CLIENT SIDE UTILS ---
+
 export const extractUrls = (text: string): string[] => {
-  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const urlRegex = /(https?:\/\/[^\s<>"'()[\]]+)/g;
   const matches = text.match(urlRegex);
   if (!matches) return [];
-  // Clean trailing punctuation which simple regex often captures
-  return Array.from(new Set(matches.map(url => url.replace(/[.,;:"')\]]+$/, ''))));
+  // Clean punctuation from end of URLs
+  return Array.from(new Set(matches.map(url => url.replace(/[.,;:"')\]}]+$/, ''))));
 };
 
 const formatSourceTitle = (url: string): string => {
@@ -42,138 +51,97 @@ const formatSourceTitle = (url: string): string => {
   }
 };
 
+// SMART JSON PARSER: Extracts JSON from chatty responses
+const safeParseJSON = <T>(text: string, fallback: T): T => {
+  try {
+    let cleanText = text.trim();
+    
+    // 1. Remove markdown code blocks if present
+    if (cleanText.includes('```')) {
+      cleanText = cleanText.replace(/```json/g, '').replace(/```/g, '');
+    }
+
+    // 2. Find the JSON object/array bounds
+    const firstBrace = cleanText.indexOf('{');
+    const firstBracket = cleanText.indexOf('[');
+    
+    let start = -1;
+    let end = -1;
+
+    // Determine if we are looking for an object or array
+    if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+        start = firstBrace;
+        end = cleanText.lastIndexOf('}') + 1;
+    } else if (firstBracket !== -1) {
+        start = firstBracket;
+        end = cleanText.lastIndexOf(']') + 1;
+    }
+
+    if (start !== -1 && end !== -1) {
+        cleanText = cleanText.substring(start, end);
+    }
+
+    return JSON.parse(cleanText) as T;
+  } catch (e) {
+    console.warn("JSON Parse Failed. Fallback triggered.", { textPreview: text.substring(0, 100) });
+    return fallback;
+  }
+};
+
 type LogCallback = (message: string, type: 'info' | 'network' | 'ai' | 'success' | 'planning' | 'synthesizing', activeTask?: string) => void;
 
-// --- PHASE 1: STRATEGY & TRIAGE ---
+// --- PHASE 1: STRATEGY ---
 export const runStrategyPhase = async (rawText: string, instructions: string, log: LogCallback): Promise<{ plan: ResearchPlan, entities: Entity[] }> => {
   const ai = getClient();
   const instructionWithUser = STRATEGY_AGENT_INSTRUCTION.replace('${userInstructions}', instructions);
   
-  const [planRes, entityRes] = await Promise.all([
-    ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
-      contents: [{ role: 'user', parts: [{ text: `RAW INTEL: ${rawText.substring(0, 20000)}` }] }],
-      config: {
-        systemInstruction: instructionWithUser,
-        responseMimeType: "application/json",
-        responseSchema: RESEARCH_PLAN_SCHEMA,
-        thinkingConfig: { thinkingBudget: 2048 }
-      }
-    }),
-    ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
-      contents: [{ role: 'user', parts: [{ text: `RAW INTEL: ${rawText.substring(0, 20000)}` }] }],
-      config: {
-        systemInstruction: ENTITY_AGENT_INSTRUCTION,
-        responseMimeType: "application/json",
-        responseSchema: ENTITY_LIST_SCHEMA,
-        thinkingConfig: { thinkingBudget: 1024 }
-      }
-    })
-  ]);
+  try {
+    const [planRes, entityRes] = await Promise.all([
+      ai.models.generateContent({
+        model: 'gemini-3-pro-preview',
+        contents: [{ role: 'user', parts: [{ text: `RAW INTEL: ${rawText.substring(0, 25000)}` }] }],
+        config: {
+          systemInstruction: instructionWithUser,
+          responseMimeType: "application/json",
+          responseSchema: RESEARCH_PLAN_SCHEMA,
+          thinkingConfig: { thinkingBudget: 4096 }
+        }
+      }),
+      ai.models.generateContent({
+        model: 'gemini-3-pro-preview',
+        contents: [{ role: 'user', parts: [{ text: `RAW INTEL: ${rawText.substring(0, 25000)}` }] }],
+        config: {
+          systemInstruction: ENTITY_AGENT_INSTRUCTION,
+          responseMimeType: "application/json",
+          responseSchema: ENTITY_LIST_SCHEMA,
+          thinkingConfig: { thinkingBudget: 1024 }
+        }
+      })
+    ]);
 
-  return {
-    plan: JSON.parse(planRes.text || "{}"),
-    entities: (JSON.parse(entityRes.text || "{}") as any).entities || []
-  };
-};
-
-// --- HELPER: GENERATE MORE QUERIES ---
-export const generateMoreQueries = async (rawText: string, currentQueries: string[], instructions: string): Promise<string[]> => {
-  const ai = getClient();
-  const prompt = `
-    ROLE: Intelligence Research Planner.
-    TASK: Generate 5 additional, distinct search queries to investigate the following intelligence subject.
+    const plan = safeParseJSON<ResearchPlan>(planRes.text || "{}", { 
+        reliabilityAssessment: "Pending Analysis", informationGaps: [], searchQueries: [] 
+    });
     
-    CONTEXT: ${rawText.substring(0, 10000)}
-    USER INSTRUCTIONS: ${instructions}
-    EXISTING QUERIES (Do not duplicate): ${JSON.stringify(currentQueries)}
-    
-    OUTPUT: JSON Array of strings. Example: { "queries": ["query 1", "query 2"] }
-  `;
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: QUERIES_SCHEMA,
-      thinkingConfig: { thinkingBudget: 1024 }
+    // Fallback: Ensure at least one query exists if text is present
+    if (plan.searchQueries.length === 0 && rawText.length > 50) {
+        plan.searchQueries.push("Context and background investigation for provided intelligence");
     }
-  });
 
-  const result = JSON.parse(response.text || "{}");
-  return result.queries || [];
+    const entities = safeParseJSON<{entities: Entity[]}>(entityRes.text || "{}", { entities: [] }).entities;
+
+    return { plan, entities };
+
+  } catch (error) {
+    console.error("Strategy Phase Error", error);
+    return {
+        plan: { reliabilityAssessment: "Analysis Failed", informationGaps: [], searchQueries: [] },
+        entities: []
+    };
+  }
 };
 
-// --- NEW HELPER: ANALYZE RESEARCH GAP (FEEDBACK LOOP) ---
-export const analyzeResearchCoverage = async (
-  currentContext: string, 
-  originalGaps: string[], 
-  instructions: string
-): Promise<string[]> => {
-  const ai = getClient();
-  const prompt = `
-    ORIGINAL INFO GAPS: ${JSON.stringify(originalGaps)}
-    MISSION INSTRUCTIONS: ${instructions}
-    
-    GATHERED INTELLIGENCE SUMMARY (First 25k chars):
-    ${currentContext.substring(0, 25000)}
-    
-    TASK: Analyze if the gathered intelligence sufficiently covers the gaps and instructions.
-    If coverage is weak for any critical area, generate 3-5 high-value, specific search queries to target the missing info.
-    If coverage is sufficient, return empty array.
-  `;
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    config: {
-      systemInstruction: GAP_ANALYSIS_INSTRUCTION,
-      responseMimeType: "application/json",
-      responseSchema: QUERIES_SCHEMA,
-      thinkingConfig: { thinkingBudget: 1024 }
-    }
-  });
-
-  const result = JSON.parse(response.text || "{}");
-  return result.queries || [];
-};
-
-// --- NEW HELPER: IDENTIFY STRUCTURAL GAPS (PRE-DRAFTING CHECK) ---
-export const identifyStructuralGaps = async (
-  structure: ReportStructure, 
-  currentContext: string
-): Promise<string[]> => {
-  const ai = getClient();
-  const prompt = `
-    PROPOSED REPORT STRUCTURE:
-    ${JSON.stringify(structure)}
-    
-    AVAILABLE INTELLIGENCE (First 25k chars):
-    ${currentContext.substring(0, 25000)}
-    
-    TASK: Identify if any section in the structure lacks sufficient data in the available intelligence.
-    Generate targeted search queries for any unsupported sections.
-    Return empty array if all sections have data.
-  `;
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    config: {
-      systemInstruction: STRUCTURAL_COVERAGE_INSTRUCTION,
-      responseMimeType: "application/json",
-      responseSchema: QUERIES_SCHEMA,
-      thinkingConfig: { thinkingBudget: 1024 }
-    }
-  });
-
-  const result = JSON.parse(response.text || "{}");
-  return result.queries || [];
-};
-
-// --- PHASE 2: DEEP RESEARCH ---
+// --- PHASE 2: RESEARCH ---
 export const runResearchPhase = async (urls: string[], queries: string[], log: LogCallback): Promise<DeepResearchResult> => {
   const ai = getClient();
   const contextParts: string[] = [];
@@ -182,23 +150,22 @@ export const runResearchPhase = async (urls: string[], queries: string[], log: L
   // A. URL Deep Read
   if (urls.length > 0) {
     const urlTasks = urls.map(async (url) => {
-      log(`Scanning: ${url}`, 'network', url);
+      log(`Interrogating Source: ${url}`, 'network', url);
       try {
         const res = await ai.models.generateContent({
           model: 'gemini-3-pro-preview',
-          contents: [{ role: 'user', parts: [{ text: `Analyze ${url}. Extract Title, Summary, Names, Dates, and Key Events relevant to intelligence reporting. JSON Output.` }] }],
+          contents: [{ role: 'user', parts: [{ text: `Analyze ${url}. Extract Title, Summary, Names, Dates, and Key Events. JSON Output.` }] }],
           config: { 
              responseMimeType: "application/json",
              tools: [{ googleSearch: {} }],
              thinkingConfig: { thinkingBudget: 1024 } 
           }
         });
-        const data = JSON.parse(res.text || "{}");
+        const data = safeParseJSON(res.text || "{}", { title: "", summary: "", content: "" });
         const title = data.title || formatSourceTitle(url);
         gatheredSources.set(url, { url, title, summary: data.summary || "Analyzed source." });
         return `[SOURCE: ${title}]\n${data.content || JSON.stringify(data)}`;
       } catch (e) {
-        gatheredSources.set(url, { url, title: formatSourceTitle(url), summary: "Source accessed." });
         return `[SOURCE ERROR: ${url}]`;
       }
     });
@@ -206,55 +173,39 @@ export const runResearchPhase = async (urls: string[], queries: string[], log: L
     contextParts.push(...urlResults);
   }
 
-  // B. Google Search
+  // B. Google Search Grid
   if (queries.length > 0) {
-    const queryTasks = queries.slice(0, 15).map(async (q) => {
-      log(`Searching: ${q}`, 'network', 'Search Grid');
-      try {
-        const res = await ai.models.generateContent({
-          model: 'gemini-3-pro-preview',
-          contents: [{ role: 'user', parts: [{ text: `Search for: "${q}". Provide a detailed intelligence summary including specific dates, entities, and confirmed events.` }] }],
-          config: { tools: [{ googleSearch: {} }] }
-        });
-        
-        // 1. Capture Grounding Metadata
-        res.candidates?.[0]?.groundingMetadata?.groundingChunks?.forEach((c: any) => {
-           if (c.web?.uri && !c.web.uri.includes('vertexaisearch')) {
-               gatheredSources.set(c.web.uri, {
-                   url: c.web.uri,
-                   title: c.web.title || formatSourceTitle(c.web.uri),
-                   summary: `Found via search: "${q}"`
-               });
-           }
-        });
-
-        // 2. Capture URLs in text
-        const textResponse = res.text || "";
-        const fallbackUrls = extractUrls(textResponse);
-        fallbackUrls.forEach(u => {
-             if (u.length > 10 && !gatheredSources.has(u)) {
-                gatheredSources.set(u, {
-                   url: u,
-                   title: formatSourceTitle(u),
-                   summary: `Referenced in search result for: "${q}"`
+    const batchSize = 5;
+    for (let i = 0; i < queries.length; i += batchSize) {
+        const batch = queries.slice(i, i + batchSize);
+        const batchResults = await Promise.all(batch.map(async (q) => {
+            log(`OSINT Grid Search: ${q}`, 'network', 'Search Grid');
+            try {
+                const res = await ai.models.generateContent({
+                    model: 'gemini-3-pro-preview',
+                    contents: [{ role: 'user', parts: [{ text: `Detailed report on: "${q}". List URLs used.` }] }],
+                    config: { tools: [{ googleSearch: {} }] }
                 });
-             }
-        });
 
-        return `[SEARCH QUERY: ${q}]\n${textResponse}`;
-      } catch { return ""; }
-    });
-    const results = await Promise.all(queryTasks);
-    results.forEach(r => { if(r) contextParts.push(r); });
+                // Metadata Extraction
+                res.candidates?.[0]?.groundingMetadata?.groundingChunks?.forEach((c: any) => {
+                    if (c.web?.uri && !c.web.uri.includes('vertexaisearch')) {
+                        gatheredSources.set(c.web.uri, {
+                            url: c.web.uri,
+                            title: c.web.title || formatSourceTitle(c.web.uri),
+                            summary: `Source via query: "${q}"`
+                        });
+                    }
+                });
+
+                return `[QUERY: ${q}]\n${res.text || ""}`;
+            } catch { return ""; }
+        }));
+        contextParts.push(...batchResults);
+    }
   }
 
   return { context: contextParts.join("\n\n"), sources: Array.from(gatheredSources.values()) };
-};
-
-// --- TACTICAL RESEARCH BURST (For Gap Filling) ---
-export const conductTacticalResearch = async (queries: string[], log: LogCallback): Promise<DeepResearchResult> => {
-    // Re-use the existing logic but optimized for speed (no URL deep reads, just search)
-    return runResearchPhase([], queries, log);
 };
 
 // --- PHASE 3: STRUCTURE ---
@@ -262,55 +213,57 @@ export const runStructurePhase = async (context: string, instructions: string, l
   const ai = getClient();
   const instructionWithUser = STRUCTURE_AGENT_INSTRUCTION.replace('${userInstructions}', instructions);
 
-  const res = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
-    contents: [{ role: 'user', parts: [{ text: `CONTEXT:\n${context.substring(0, 30000)}` }] }],
-    config: {
-      systemInstruction: instructionWithUser,
-      responseMimeType: "application/json",
-      responseSchema: STRUCTURE_SCHEMA,
-      thinkingConfig: { thinkingBudget: 2048 }
-    }
-  });
-  return JSON.parse(res.text || "{}") as ReportStructure;
+  try {
+    const res = await ai.models.generateContent({
+      model: 'gemini-3-pro-preview',
+      contents: [{ role: 'user', parts: [{ text: `CONTEXT:\n${context.substring(0, 30000)}` }] }],
+      config: {
+        systemInstruction: instructionWithUser,
+        responseMimeType: "application/json",
+        responseSchema: STRUCTURE_SCHEMA,
+        thinkingConfig: { thinkingBudget: 2048 }
+      }
+    });
+    
+    const structure = safeParseJSON<ReportStructure>(res.text || "{}", DEFAULT_REPORT_STRUCTURE as ReportStructure);
+    if (!structure.sections || structure.sections.length === 0) return DEFAULT_REPORT_STRUCTURE as ReportStructure;
+    return structure;
+  } catch (e) {
+      return DEFAULT_REPORT_STRUCTURE as ReportStructure;
+  }
 };
 
 // --- PHASE 4: DRAFTING ---
 export const runDraftingPhase = async (structure: ReportStructure, context: string, instructions: string, log: LogCallback): Promise<ReportSection[]> => {
   const ai = getClient();
-  // Enhanced instructions to prevent header repetition and markdown artifacts
   const baseInstruction = SECTION_AGENT_INSTRUCTION.replace('${userInstructions}', instructions);
-  const strictInstruction = `${baseInstruction}
-  
-  **IMPORTANT FORMATTING RULES:**
-  1. Do NOT repeat the section title in your output.
-  2. Do NOT use markdown headers (e.g., #, ##, ###).
-  3. Start directly with the content paragraphs or list items.
-  4. Output purely the body content for the section.
-  `;
 
   const sectionPromises = structure.sections.map(async (sectionPlan) => {
-     log(`Drafting: ${sectionPlan.title}`, 'ai', sectionPlan.title);
-     const res = await ai.models.generateContent({
-        model: 'gemini-3-pro-preview',
-        contents: [{ role: 'user', parts: [{ text: `
-            SECTION TITLE: ${sectionPlan.title}
-            SPECIFIC GUIDANCE: ${sectionPlan.guidance}
-            CONTEXT: ${context.substring(0, 30000)}
-        ` }] }],
-        config: {
-            systemInstruction: strictInstruction,
-            responseMimeType: "application/json",
-            responseSchema: SECTION_CONTENT_SCHEMA,
-            thinkingConfig: { thinkingBudget: 2048 }
-        }
-     });
-     const contentData = JSON.parse(res.text || "{}");
-     return {
-         title: sectionPlan.title,
-         type: sectionPlan.type,
-         content: contentData.content
-     } as ReportSection;
+     log(`Drafting Component: ${sectionPlan.title}`, 'ai', sectionPlan.title);
+     try {
+         const res = await ai.models.generateContent({
+            model: 'gemini-3-pro-preview',
+            contents: [{ role: 'user', parts: [{ text: `
+                SECTION: ${sectionPlan.title}
+                GUIDANCE: ${sectionPlan.guidance}
+                CONTEXT: ${context.substring(0, 30000)}
+            ` }] }],
+            config: {
+                systemInstruction: baseInstruction,
+                responseMimeType: "application/json",
+                responseSchema: SECTION_CONTENT_SCHEMA,
+                thinkingConfig: { thinkingBudget: 2048 }
+            }
+         });
+         const contentData = safeParseJSON(res.text || "{}", { content: "Data insufficient." });
+         return {
+             title: sectionPlan.title,
+             type: sectionPlan.type,
+             content: contentData.content
+         } as ReportSection;
+     } catch (e) {
+         return { title: sectionPlan.title, type: sectionPlan.type, content: "Processing error." } as ReportSection;
+     }
   });
 
   return await Promise.all(sectionPromises);
@@ -321,40 +274,103 @@ export const runFinalizePhase = async (sections: ReportSection[], reliability: s
   const ai = getClient();
   const instructionWithUser = SUMMARY_AGENT_INSTRUCTION.replace('${userInstructions}', instructions);
 
-  const res = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
-    contents: [{ role: 'user', parts: [{ text: `
-        BODY: ${JSON.stringify(sections)}
-        RELIABILITY: ${reliability}
-        Generate Executive Summary.
-    ` }] }],
-    config: {
-        systemInstruction: instructionWithUser,
-        responseMimeType: "application/json",
-        responseSchema: FINAL_METADATA_SCHEMA,
-        thinkingConfig: { thinkingBudget: 2048 }
-    }
-  });
-  return JSON.parse(res.text || "{}");
+  try {
+      const res = await ai.models.generateContent({
+        model: 'gemini-3-pro-preview',
+        contents: [{ role: 'user', parts: [{ text: `BODY: ${JSON.stringify(sections)}\nRELIABILITY: ${reliability}` }] }],
+        config: {
+            systemInstruction: instructionWithUser,
+            responseMimeType: "application/json",
+            responseSchema: FINAL_METADATA_SCHEMA,
+            thinkingConfig: { thinkingBudget: 2048 }
+        }
+      });
+      return safeParseJSON(res.text || "{}", {
+          classification: "OFFICIAL-SENSITIVE",
+          reportTitle: "INTELLIGENCE REPORT",
+          executiveSummary: "Summary generation failed.",
+          overallConfidence: "Moderate Probability"
+      });
+  } catch {
+      return {
+          classification: "OFFICIAL-SENSITIVE",
+          reportTitle: "INTELLIGENCE REPORT",
+          executiveSummary: "Error during finalization.",
+          overallConfidence: "Low Probability"
+      };
+  }
 };
 
-// --- TOOLS (Unchanged) ---
+// --- UTILS ---
+
+export const generateMoreQueries = async (rawText: string, currentQueries: string[], instructions: string): Promise<string[]> => {
+  const ai = getClient();
+  try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-pro-preview',
+        contents: [{ role: 'user', parts: [{ text: `Generate 5 gap-filling queries based on: ${rawText.substring(0,5000)}` }] }],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: QUERIES_SCHEMA,
+          thinkingConfig: { thinkingBudget: 1024 }
+        }
+      });
+      return safeParseJSON<{queries: string[]}>(response.text || "{}", { queries: [] }).queries;
+  } catch { return []; }
+};
+
+export const analyzeResearchCoverage = async (currentContext: string, originalGaps: string[], instructions: string): Promise<string[]> => {
+  const ai = getClient();
+  try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-pro-preview',
+        contents: [{ role: 'user', parts: [{ text: `Gaps: ${JSON.stringify(originalGaps)}. Context: ${currentContext.substring(0, 10000)}. Generate queries if needed.` }] }],
+        config: {
+          systemInstruction: GAP_ANALYSIS_INSTRUCTION,
+          responseMimeType: "application/json",
+          responseSchema: QUERIES_SCHEMA,
+          thinkingConfig: { thinkingBudget: 1024 }
+        }
+      });
+      return safeParseJSON<{queries: string[]}>(response.text || "{}", { queries: [] }).queries;
+  } catch { return []; }
+};
+
+export const identifyStructuralGaps = async (structure: ReportStructure, currentContext: string): Promise<string[]> => {
+  const ai = getClient();
+  try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-pro-preview',
+        contents: [{ role: 'user', parts: [{ text: `Structure: ${JSON.stringify(structure)}. Context: ${currentContext.substring(0, 10000)}. Missing info?` }] }],
+        config: {
+          systemInstruction: STRUCTURAL_COVERAGE_INSTRUCTION,
+          responseMimeType: "application/json",
+          responseSchema: QUERIES_SCHEMA,
+          thinkingConfig: { thinkingBudget: 1024 }
+        }
+      });
+      return safeParseJSON<{queries: string[]}>(response.text || "{}", { queries: [] }).queries;
+  } catch { return []; }
+};
+
+export const conductTacticalResearch = async (queries: string[], log: LogCallback): Promise<DeepResearchResult> => {
+    return runResearchPhase([], queries, log);
+};
+
+// --- CHAT TOOLS ---
 const editReportTool: FunctionDeclaration = {
     name: 'edit_report_section',
-    description: 'Update or create a specific section of the intelligence report.',
+    description: 'Update or create a report section.',
     parameters: {
       type: Type.OBJECT,
-      properties: {
-        sectionTitle: { type: Type.STRING },
-        content: { type: Type.STRING }
-      },
+      properties: { sectionTitle: { type: Type.STRING }, content: { type: Type.STRING } },
       required: ['sectionTitle', 'content']
     }
 };
 
 const addSourcesTool: FunctionDeclaration = {
     name: 'add_sources_to_report',
-    description: 'Add new verified source URLs.',
+    description: 'Add new verified URLs.',
     parameters: {
       type: Type.OBJECT,
       properties: { urls: { type: Type.ARRAY, items: { type: Type.STRING } } },
@@ -364,7 +380,7 @@ const addSourcesTool: FunctionDeclaration = {
 
 const searchGoogleTool: FunctionDeclaration = {
     name: 'search_google',
-    description: 'Perform a Google Search to verify facts or gather information.',
+    description: 'Perform a Google Search.',
     parameters: {
       type: Type.OBJECT,
       properties: { query: { type: Type.STRING } },
@@ -374,17 +390,10 @@ const searchGoogleTool: FunctionDeclaration = {
 
 export const createReportChatSession = (report: IntelligenceReport, rawContext: string) => {
     const ai = getClient();
-    const systemContext = `
-      You are 'Sentinel Assistant'. Context: Analysis of INTREP ${report.referenceNumber}.
-      Report Data: ${JSON.stringify(report)}
-      Raw Data Snippet: ${rawContext.substring(0, 2000)}...
-      Mission: Verify facts, edit report, add sources.
-      Protocol: Concise, professional, British English.
-    `;
     return ai.chats.create({
       model: 'gemini-3-pro-preview',
       config: {
-        systemInstruction: systemContext,
+        systemInstruction: `You are 'Sentinel Assistant'. Report: ${JSON.stringify(report)}. Raw: ${rawContext.substring(0,2000)}. Protocol: Professional UK Intelligence.`,
         thinkingConfig: { thinkingBudget: 1024 },
         tools: [{ functionDeclarations: [editReportTool, addSourcesTool, searchGoogleTool] }]
       }
@@ -396,16 +405,11 @@ export const performSearchQuery = async (query: string): Promise<string> => {
     try {
       const response = await ai.models.generateContent({
         model: 'gemini-3-pro-preview',
-        contents: [{ role: 'user', parts: [{ text: `Search for: "${query}". Summarize key findings and list URLs.` }] }],
-        config: { 
-          tools: [{ googleSearch: {} }] 
-        }
+        contents: [{ role: 'user', parts: [{ text: `Search: "${query}". Summarize.` }] }],
+        config: { tools: [{ googleSearch: {} }] }
       });
-      return response.text || "No search results available.";
-    } catch (e) {
-      console.error("Search tool error:", e);
-      return "Search failed.";
-    }
+      return response.text || "No results.";
+    } catch { return "Search failed."; }
 };
   
 export const sendChatMessage = async (chat: Chat, message: string, attachments: Attachment[] = []) => {
@@ -420,19 +424,17 @@ export const refineSection = async (report: IntelligenceReport, sectionTitle: st
     const section = report.sections.find(s => s.title === sectionTitle);
     if (!section) throw new Error("Section not found");
   
-    const prompt = `Refine section '${sectionTitle}'. Instruction: ${instruction}. Current Content: ${JSON.stringify(section.content)}`;
-  
+    const prompt = `Refine section '${sectionTitle}'. Instruction: ${instruction}. Current: ${JSON.stringify(section.content)}`;
     const response = await ai.models.generateContent({
       model: 'gemini-3-pro-preview',
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         responseMimeType: "application/json",
-        responseSchema: SECTION_CONTENT_SCHEMA, // Use the smaller schema
+        responseSchema: SECTION_CONTENT_SCHEMA,
         thinkingConfig: { thinkingBudget: 1024 }
       }
     });
-    const result = JSON.parse(response.text || "{}");
-    return result.content;
+    return safeParseJSON(response.text || "{}", { content: section.content }).content;
 };
 
 export interface VerificationResult {
@@ -444,7 +446,7 @@ export const verifyClaim = async (claim: string): Promise<VerificationResult & {
     const ai = getClient();
     const response = await ai.models.generateContent({
       model: 'gemini-3-pro-preview',
-      contents: [{ role: 'user', parts: [{ text: `Verify claim: "${claim}". Return JSON status/explanation.` }] }],
+      contents: [{ role: 'user', parts: [{ text: `Verify: "${claim}". JSON Output.` }] }],
       config: {
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",
@@ -458,20 +460,17 @@ export const verifyClaim = async (claim: string): Promise<VerificationResult & {
         }
       }
     });
-    const result = JSON.parse(response.text || "{}");
-    return { ...result, groundingMetadata: response.candidates?.[0]?.groundingMetadata };
+    return { 
+        ...safeParseJSON<VerificationResult>(response.text || "{}", { status: "Inconclusive", explanation: "Error." }), 
+        groundingMetadata: response.candidates?.[0]?.groundingMetadata 
+    };
 };
 
 export const conductDeepResearch = async (topic: string, fullContext: string): Promise<ResearchSectionResult> => {
     const ai = getClient();
-    const prompt = `
-      TASK: Deep research on "${topic}". 
-      CONTEXT: ${fullContext}
-      OUTPUT: JSON with title, detailed content, and links (with title/summary).
-    `;
     const response = await ai.models.generateContent({
       model: 'gemini-3-pro-preview',
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      contents: [{ role: 'user', parts: [{ text: `Deep research on "${topic}". Context: ${fullContext.substring(0, 10000)}` }] }],
       config: {
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",
@@ -482,14 +481,7 @@ export const conductDeepResearch = async (topic: string, fullContext: string): P
             content: { type: Type.STRING },
             links: { 
               type: Type.ARRAY, 
-              items: { 
-                type: Type.OBJECT, 
-                properties: { 
-                   url: { type: Type.STRING }, 
-                   title: { type: Type.STRING },
-                   summary: { type: Type.STRING } 
-                } 
-              } 
+              items: { type: Type.OBJECT, properties: { url: { type: Type.STRING }, title: { type: Type.STRING }, summary: { type: Type.STRING } } } 
             }
           },
           required: ["title", "content", "links"]
@@ -498,21 +490,15 @@ export const conductDeepResearch = async (topic: string, fullContext: string): P
       }
     });
     
-    const result = JSON.parse(response.text || "{}");
-    
-    // Merge grounding links if any (fallback)
+    const result = safeParseJSON(response.text || "{}", { title: topic, content: "Research failed.", links: [] });
+    // Merge grounding links (fallback)
     const groundingLinks = response.candidates?.[0]?.groundingMetadata?.groundingChunks
       ?.map((c: any) => ({ 
           url: c.web?.uri, 
           title: c.web?.title || formatSourceTitle(c.web?.uri), 
-          summary: 'Identified via Search Grounding' 
+          summary: 'Search Result' 
       }))
       .filter((s: any) => s.url && !s.url.includes('vertexaisearch')) || [];
   
-    const mergedLinks = [...(result.links || [])];
-    groundingLinks.forEach((gl: any) => {
-       if (!mergedLinks.find(l => l.url === gl.url)) mergedLinks.push(gl);
-    });
-  
-    return { ...result, links: mergedLinks };
+    return { ...result, links: [...(result.links || []), ...groundingLinks] };
 };
