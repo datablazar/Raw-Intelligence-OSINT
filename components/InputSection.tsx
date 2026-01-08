@@ -1,7 +1,8 @@
 
 import React, { useState, useRef } from 'react';
-import { Trash2, Upload, FileAudio, FileVideo, FileImage, X, Shield, Paperclip, Clipboard, Play } from 'lucide-react';
+import { Trash2, Upload, FileAudio, FileVideo, FileImage, X, Shield, Paperclip, Clipboard, Play, FileText } from 'lucide-react';
 import { Attachment } from '../types';
+import mammoth from 'mammoth';
 
 interface InputSectionProps {
   onGenerate: (text: string, attachments: Attachment[], instructions: string) => void;
@@ -31,17 +32,46 @@ const InputSection: React.FC<InputSectionProps> = ({ onGenerate, isProcessing, v
     const newAttachments: Attachment[] = [];
     for (const file of files) {
       let type: Attachment['type'] = 'file';
+      let textContent: string | undefined;
+      let base64: string | undefined;
+
+      // Determine Type
       if (file.type.startsWith('image/')) type = 'image';
       else if (file.type.startsWith('audio/')) type = 'audio';
       else if (file.type.startsWith('video/')) type = 'video';
-      const base64 = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
-        reader.readAsDataURL(file);
-      });
-      newAttachments.push({ file, base64, mimeType: file.type, type });
+      
+      // Process Content
+      if (file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+          // DOCX
+          try {
+              type = 'text';
+              const arrayBuffer = await file.arrayBuffer();
+              const result = await mammoth.extractRawText({ arrayBuffer });
+              textContent = result.value;
+          } catch (e) {
+              console.error("DOCX extraction failed", e);
+              continue;
+          }
+      } else if (file.type === 'text/plain' || file.type === 'application/json' || file.type === 'text/csv' || file.type === 'text/markdown' || file.name.endsWith('.md')) {
+          // TEXT
+          type = 'text';
+          textContent = await file.text();
+      } else {
+          // BINARY (PDF, Images, etc)
+          base64 = await new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+              reader.readAsDataURL(file);
+          });
+      }
+
+      newAttachments.push({ file, base64, mimeType: file.type, type, textContent, context: '' });
     }
     setAttachments(prev => [...prev, ...newAttachments]);
+  };
+
+  const updateAttachmentContext = (index: number, val: string) => {
+    setAttachments(prev => prev.map((att, i) => i === index ? { ...att, context: val } : att));
   };
 
   const handleGenerate = () => {
@@ -69,9 +99,9 @@ const InputSection: React.FC<InputSectionProps> = ({ onGenerate, isProcessing, v
         </div>
       )}
 
-      <div className="flex-grow flex flex-col p-6 gap-6" onDragEnter={handleDrag} onDragLeave={handleDrag} onDragOver={handleDrag} onDrop={handleDrop}>
+      <div className="flex-grow flex flex-col p-6 gap-6 overflow-y-auto" onDragEnter={handleDrag} onDragLeave={handleDrag} onDragOver={handleDrag} onDrop={handleDrop}>
         
-        <div className="flex-grow-[2] relative flex flex-col group">
+        <div className="flex-grow min-h-[150px] relative flex flex-col group">
           <label className="text-[10px] font-bold text-gray-500 uppercase mb-2">Raw Intelligence</label>
           <textarea
             value={rawText}
@@ -82,7 +112,7 @@ const InputSection: React.FC<InputSectionProps> = ({ onGenerate, isProcessing, v
           />
         </div>
 
-        <div className="flex-grow-[1] flex flex-col">
+        <div className="flex-shrink-0 flex flex-col min-h-[80px]">
            <label className="text-[10px] font-bold text-gray-500 uppercase mb-2">Specific Directives (Optional)</label>
            <textarea
             value={instructions}
@@ -94,23 +124,44 @@ const InputSection: React.FC<InputSectionProps> = ({ onGenerate, isProcessing, v
         </div>
 
         {attachments.length > 0 && (
-          <div className="flex flex-wrap gap-2 p-2 bg-black rounded border border-gray-800">
-            {attachments.map((att, idx) => (
-              <div key={idx} className="bg-gray-800 px-3 py-1 rounded flex items-center gap-2 text-xs">
-                <span className="text-gray-300 max-w-[100px] truncate">{att.file.name}</span>
-                <button onClick={() => setAttachments(p => p.filter((_, i) => i !== idx))}><X className="w-3 h-3 hover:text-red-500" /></button>
-              </div>
-            ))}
+          <div className="flex flex-col gap-2">
+            <label className="text-[10px] font-bold text-gray-500 uppercase">Attached Assets</label>
+            <div className="grid grid-cols-1 gap-2">
+              {attachments.map((att, idx) => (
+                <div key={idx} className="bg-gray-800/50 p-3 rounded border border-gray-800 flex flex-col gap-2 animate-[fadeIn_0.2s_ease-out]">
+                  <div className="flex items-center justify-between">
+                     <div className="flex items-center gap-2 overflow-hidden">
+                        {att.type === 'image' && <FileImage className="w-4 h-4 text-purple-400" />}
+                        {att.type === 'audio' && <FileAudio className="w-4 h-4 text-yellow-400" />}
+                        {att.type === 'video' && <FileVideo className="w-4 h-4 text-red-400" />}
+                        {(att.type === 'text' || att.type === 'file') && <FileText className="w-4 h-4 text-uk-blue" />}
+                        <span className="text-xs font-bold text-gray-300 truncate max-w-[200px]">{att.file.name}</span>
+                        <span className="text-[10px] text-gray-500 uppercase">{(att.file.size / 1024).toFixed(0)}KB</span>
+                     </div>
+                     <button onClick={() => setAttachments(p => p.filter((_, i) => i !== idx))} className="text-gray-600 hover:text-red-500 transition-colors"><X className="w-4 h-4" /></button>
+                  </div>
+                  <input 
+                    type="text" 
+                    value={att.context || ''}
+                    onChange={(e) => updateAttachmentContext(idx, e.target.value)}
+                    placeholder="Add specific context for this file (e.g., 'Intercepted on 12 OCT')..."
+                    className="w-full bg-black/50 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-uk-blue placeholder:text-gray-600"
+                  />
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
-        <div className="flex items-center justify-between pt-4 border-t border-gray-800">
+        <div className="flex items-center justify-between pt-4 border-t border-gray-800 mt-auto">
            <div className="flex items-center gap-3">
               <input type="file" multiple className="hidden" ref={fileInputRef} onChange={e => e.target.files && processFiles(Array.from(e.target.files))} />
               <button onClick={() => fileInputRef.current?.click()} disabled={isProcessing} className="flex items-center gap-2 text-xs font-bold text-gray-400 hover:text-white uppercase transition-colors">
                 <Paperclip className="w-4 h-4" /> Attach Files
               </button>
-              <button onClick={() => { setRawText(''); setAttachments([]); setInstructions(''); }} className="text-gray-600 hover:text-red-500 transition-colors" title="Clear All"><Trash2 className="w-4 h-4" /></button>
+              {attachments.length > 0 && (
+                <button onClick={() => { setAttachments([]); }} className="text-gray-600 hover:text-red-500 transition-colors" title="Clear Attachments"><Trash2 className="w-4 h-4" /></button>
+              )}
            </div>
 
            <button onClick={handleGenerate} disabled={(!rawText.trim() && attachments.length === 0) || isProcessing}

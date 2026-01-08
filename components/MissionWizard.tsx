@@ -69,7 +69,8 @@ const MissionWizard: React.FC<MissionWizardProps> = ({ config, onComplete, onCan
       const execute = async () => {
         addLog("Initializing Sentinel Strategy Engine...", 'planning');
         try {
-          const { plan, entities } = await runStrategyPhase(config.rawText, config.instructions, addLog);
+          // Pass attachments to Strategy Phase
+          const { plan, entities } = await runStrategyPhase(config.rawText, config.attachments, config.instructions, addLog);
           setPlan(plan); setEntities(entities); setEditablePlan(plan);
           addLog("Strategy formulated. Awaiting Operator authorization.", 'success');
           setStep('review_plan');
@@ -87,7 +88,8 @@ const MissionWizard: React.FC<MissionWizardProps> = ({ config, onComplete, onCan
       const execute = async () => {
         addLog("Deploying Global Crawler Swarm...", 'network');
         try {
-          const initialResult = await runResearchPhase(extractUrls(config.rawText), plan.searchQueries || [], addLog);
+          const combinedText = config.rawText + "\n" + config.attachments.map(a => a.textContent || "").join(" ");
+          const initialResult = await runResearchPhase(extractUrls(combinedText), plan.searchQueries || [], addLog);
           const gapQueries = await analyzeResearchCoverage(initialResult.context, plan.informationGaps || [], config.instructions);
           
           let finalContext = initialResult.context;
@@ -121,7 +123,8 @@ const MissionWizard: React.FC<MissionWizardProps> = ({ config, onComplete, onCan
           const sourceManifest = activeSources.map((s, i) => `[Source ${i+1}] ${s.title} (${s.url})`).join('\n');
           const fullContext = `INSTRUCTIONS: ${config.instructions}\nRAW: ${config.rawText}\nSOURCES: ${sourceManifest}\nRESEARCH: ${researchData.context}`;
           
-          const struct = await runStructurePhase(fullContext, config.instructions, addLog);
+          // Pass attachments to Structure Phase
+          const struct = await runStructurePhase(fullContext, config.attachments, config.instructions, addLog);
           setStructure(struct); setEditableStructure(struct);
           addLog("Structure generated.", 'success');
           setStep('review_structure');
@@ -155,7 +158,8 @@ const MissionWizard: React.FC<MissionWizardProps> = ({ config, onComplete, onCan
           const sourceManifest = activeSources.map((s, i) => `[${i+1}] ${s.title}: ${s.summary} (${s.url})`).join('\n');
           const fullContext = `INSTRUCTIONS: ${config.instructions}\nRAW: ${config.rawText}\nSOURCES: ${sourceManifest}\nRESEARCH: ${researchData.context}`;
 
-          const sections = await runDraftingPhase(structure, fullContext, config.instructions, addLog);
+          // Pass attachments to Drafting Phase
+          const sections = await runDraftingPhase(structure, fullContext, config.attachments, config.instructions, addLog);
           addLog("Finalizing Metadata and Classification...", 'ai');
           const meta = await runFinalizePhase(sections, plan?.reliabilityAssessment || "Unknown", config.instructions, addLog);
 

@@ -57,6 +57,48 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
 
   if (!report) return null;
 
+  // --- MARKDOWN HELPERS ---
+
+  const renderMarkdown = (text: string) => {
+    if (!text) return null;
+    const parts = text.split(/(\*\*.*?\*\*)/g);
+    return parts.map((part, i) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return <strong key={i} className="font-bold text-black">{part.slice(2, -2)}</strong>;
+      }
+      const subParts = part.split(/(\*.*?\*)/g);
+      return subParts.map((subPart, j) => {
+          if (subPart.startsWith('*') && subPart.endsWith('*')) {
+              return <em key={`${i}-${j}`} className="italic">{subPart.slice(1, -1)}</em>;
+          }
+          return subPart;
+      });
+    });
+  };
+
+  const createTextRunsFromMarkdown = (text: string): TextRun[] => {
+     const parts = text.split(/(\*\*.*?\*\*)/g);
+     const runs: TextRun[] = [];
+     
+     parts.forEach(part => {
+         if (part.startsWith('**') && part.endsWith('**')) {
+             runs.push(new TextRun({ text: part.slice(2, -2), bold: true, size: 22 })); // Size 22 = 11pt
+         } else {
+             const subParts = part.split(/(\*.*?\*)/g);
+             subParts.forEach(sp => {
+                if (sp.startsWith('*') && sp.endsWith('*')) {
+                    runs.push(new TextRun({ text: sp.slice(1, -1), italics: true, size: 22 }));
+                } else if (sp) {
+                    runs.push(new TextRun({ text: sp, size: 22 }));
+                }
+             });
+         }
+     });
+     return runs;
+  };
+
+  // --- ACTIONS ---
+
   const handleVerify = async (text: string, id: string) => {
     if (verifyingId) return;
     setVerifyingId(id);
@@ -161,11 +203,14 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
                 let body: Paragraph[] = [];
                 if (Array.isArray(s.content)) {
                     body = s.content.map(line => new Paragraph({
-                        text: line,
+                        children: createTextRunsFromMarkdown(line),
                         bullet: { level: 0 }
                     }));
                 } else {
-                    body = s.content.split('\n').map(line => new Paragraph({ text: line }));
+                    // Split content by newline to handle paragraphs
+                    body = s.content.split('\n').map(line => new Paragraph({ 
+                        children: createTextRunsFromMarkdown(line)
+                    }));
                 }
                 return [head, ...body];
             }),
@@ -261,7 +306,7 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
           
           {/* --- PAPER VIEW --- */}
           {activeTab === 'report' && (
-            <div className="bg-white w-full max-w-[210mm] min-h-[297mm] shadow-2xl relative text-black font-serif print:shadow-none print:w-full print:max-w-none print:m-0 print:p-0 flex flex-col">
+            <div className="bg-white w-full max-w-[210mm] min-h-[297mm] h-auto shadow-2xl relative text-black font-serif print:shadow-none print:w-full print:max-w-none print:m-0 print:p-0 flex flex-col">
               
               <div className="p-12 md:p-16 print:p-12 flex-grow">
                  
@@ -297,7 +342,7 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
                                 <ul className="list-disc ml-4 pl-2 space-y-2 text-sm leading-relaxed text-justify text-gray-800 marker:text-gray-400">
                                     {section.content.map((item, i) => (
                                         <li key={i} className="pl-1 group/item relative">
-                                            <span>{item}</span>
+                                            <span>{renderMarkdown(item)}</span>
                                             <button onClick={() => handleVerify(item, `${idx}-${i}`)} className="ml-2 text-[10px] font-bold text-uk-blue opacity-0 group-hover/item:opacity-100 hover:underline uppercase no-print transition-opacity">Verify</button>
                                             {verifications[`${idx}-${i}`] && (
                                                 <div className={`mt-2 text-xs p-2 no-print rounded ${verifications[`${idx}-${i}`].status === 'Verified' ? 'bg-green-50 text-green-800 border border-green-100' : 'bg-red-50 text-red-800 border border-red-100'}`}>
@@ -308,7 +353,11 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
                                     ))}
                                 </ul>
                             ) : (
-                                <p className="text-sm leading-relaxed text-justify whitespace-pre-wrap text-gray-800">{section.content}</p>
+                                <div className="text-sm leading-relaxed text-justify text-gray-800 space-y-4">
+                                    {section.content.split('\n').map((para, i) => (
+                                        <p key={i}>{renderMarkdown(para)}</p>
+                                    ))}
+                                </div>
                             )}
                         </div>
                     ))}

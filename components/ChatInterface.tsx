@@ -1,9 +1,10 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, X, FileImage, Sparkles, Globe, BrainCircuit } from 'lucide-react';
+import { Send, Paperclip, X, FileImage, Sparkles, Globe, BrainCircuit, FileText } from 'lucide-react';
 import { Chat } from "@google/genai";
 import { Attachment, ChatMessage, IntelligenceReport } from '../types';
 import { sendChatMessage, performSearchQuery } from '../services/geminiService';
+import mammoth from 'mammoth';
 
 interface ChatInterfaceProps {
   chatSession: Chat | null;
@@ -48,16 +49,40 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ chatSession, report, onUp
       const newAttachments: Attachment[] = [];
       for (const file of files) {
         let type: Attachment['type'] = 'file';
+        let textContent: string | undefined;
+        let base64: string | undefined;
+
+        // Determine Type
         if (file.type.startsWith('image/')) type = 'image';
         else if (file.type.startsWith('audio/')) type = 'audio';
         else if (file.type.startsWith('video/')) type = 'video';
+        
+        // Process Content
+        if (file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+            // DOCX
+            try {
+                type = 'text';
+                const arrayBuffer = await file.arrayBuffer();
+                const result = await mammoth.extractRawText({ arrayBuffer });
+                textContent = result.value;
+            } catch (e) {
+                console.error("DOCX extraction failed", e);
+                continue;
+            }
+        } else if (file.type === 'text/plain' || file.type === 'application/json' || file.type === 'text/csv' || file.type === 'text/markdown' || file.name.endsWith('.md')) {
+            // TEXT
+            type = 'text';
+            textContent = await file.text();
+        } else {
+            // BINARY (PDF, Images, etc)
+            base64 = await new Promise<string>((resolve) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+                reader.readAsDataURL(file);
+            });
+        }
 
-        const base64 = await new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
-          reader.readAsDataURL(file);
-        });
-        newAttachments.push({ file, base64, mimeType: file.type, type });
+        newAttachments.push({ file, base64, mimeType: file.type, type, textContent });
       }
       setAttachments(prev => [...prev, ...newAttachments]);
     }
@@ -189,7 +214,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ chatSession, report, onUp
               {msg.attachments && msg.attachments.length > 0 && (
                 <div className="flex flex-wrap gap-2 mb-2">
                    {msg.attachments.map((att, i) => (
-                     <div key={i} className="bg-black/20 rounded p-1"><FileImage className="w-3 h-3 text-white" /></div>
+                     <div key={i} className="bg-black/20 rounded p-1" title={att.file.name}>
+                       {att.type === 'image' ? <FileImage className="w-3 h-3 text-white" /> : <FileText className="w-3 h-3 text-white" />}
+                     </div>
                    ))}
                 </div>
               )}
@@ -218,7 +245,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ chatSession, report, onUp
       {/* Input */}
       <div className="p-3 bg-white border-t border-gray-200 flex-shrink-0">
         <div className="flex gap-2">
-          <input type="file" multiple accept="image/*,audio/*,video/*" ref={fileInputRef} className="hidden" onChange={handleFileSelect} />
+          <input type="file" multiple ref={fileInputRef} className="hidden" onChange={handleFileSelect} />
           <button onClick={() => fileInputRef.current?.click()} className="p-2 text-gray-400 hover:text-uk-blue hover:bg-gray-50 rounded-lg transition-colors"><Paperclip className="w-5 h-5" /></button>
           
           <div className="flex-grow relative">

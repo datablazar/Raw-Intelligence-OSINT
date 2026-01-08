@@ -90,16 +90,36 @@ const safeParseJSON = <T>(text: string, fallback: T): T => {
 
 type LogCallback = (message: string, type: 'info' | 'network' | 'ai' | 'success' | 'planning' | 'synthesizing', activeTask?: string) => void;
 
+// Helper to construct parts from text and attachments
+const constructParts = (text: string, attachments: Attachment[] = []) => {
+  const parts: any[] = [{ text }];
+  attachments.forEach(att => {
+    if (att.textContent) {
+      let docContent = `\n[ATTACHED DOCUMENT: ${att.file.name}]\n`;
+      if (att.context) docContent += `[USER CONTEXT: ${att.context}]\n`;
+      docContent += `${att.textContent}\n[END DOCUMENT]\n`;
+      parts.push({ text: docContent });
+    } else if (att.base64) {
+      if (att.context) {
+          parts.push({ text: `[CONTEXT FOR NEXT MEDIA ASSET (${att.file.name}): ${att.context}]` });
+      }
+      parts.push({ inlineData: { data: att.base64, mimeType: att.mimeType } });
+    }
+  });
+  return parts;
+};
+
 // --- PHASE 1: STRATEGY ---
-export const runStrategyPhase = async (rawText: string, instructions: string, log: LogCallback): Promise<{ plan: ResearchPlan, entities: Entity[] }> => {
+export const runStrategyPhase = async (rawText: string, attachments: Attachment[], instructions: string, log: LogCallback): Promise<{ plan: ResearchPlan, entities: Entity[] }> => {
   const ai = getClient();
   const instructionWithUser = STRATEGY_AGENT_INSTRUCTION.replace('${userInstructions}', instructions);
+  const contents = [{ role: 'user', parts: constructParts(`RAW INTEL: ${rawText.substring(0, 25000)}`, attachments) }];
   
   try {
     const [planRes, entityRes] = await Promise.all([
       ai.models.generateContent({
         model: 'gemini-3-pro-preview',
-        contents: [{ role: 'user', parts: [{ text: `RAW INTEL: ${rawText.substring(0, 25000)}` }] }],
+        contents: contents,
         config: {
           systemInstruction: instructionWithUser,
           responseMimeType: "application/json",
@@ -109,7 +129,7 @@ export const runStrategyPhase = async (rawText: string, instructions: string, lo
       }),
       ai.models.generateContent({
         model: 'gemini-3-pro-preview',
-        contents: [{ role: 'user', parts: [{ text: `RAW INTEL: ${rawText.substring(0, 25000)}` }] }],
+        contents: contents,
         config: {
           systemInstruction: ENTITY_AGENT_INSTRUCTION,
           responseMimeType: "application/json",
@@ -124,7 +144,7 @@ export const runStrategyPhase = async (rawText: string, instructions: string, lo
     });
     
     // Fallback: Ensure at least one query exists if text is present
-    if (plan.searchQueries.length === 0 && rawText.length > 50) {
+    if (plan.searchQueries.length === 0 && (rawText.length > 50 || attachments.length > 0)) {
         plan.searchQueries.push("Context and background investigation for provided intelligence");
     }
 
@@ -209,14 +229,15 @@ export const runResearchPhase = async (urls: string[], queries: string[], log: L
 };
 
 // --- PHASE 3: STRUCTURE ---
-export const runStructurePhase = async (context: string, instructions: string, log: LogCallback): Promise<ReportStructure> => {
+export const runStructurePhase = async (context: string, attachments: Attachment[], instructions: string, log: LogCallback): Promise<ReportStructure> => {
   const ai = getClient();
   const instructionWithUser = STRUCTURE_AGENT_INSTRUCTION.replace('${userInstructions}', instructions);
+  const contents = [{ role: 'user', parts: constructParts(`CONTEXT:\n${context.substring(0, 30000)}`, attachments) }];
 
   try {
     const res = await ai.models.generateContent({
       model: 'gemini-3-pro-preview',
-      contents: [{ role: 'user', parts: [{ text: `CONTEXT:\n${context.substring(0, 30000)}` }] }],
+      contents: contents,
       config: {
         systemInstruction: instructionWithUser,
         responseMimeType: "application/json",
@@ -234,20 +255,22 @@ export const runStructurePhase = async (context: string, instructions: string, l
 };
 
 // --- PHASE 4: DRAFTING ---
-export const runDraftingPhase = async (structure: ReportStructure, context: string, instructions: string, log: LogCallback): Promise<ReportSection[]> => {
+export const runDraftingPhase = async (structure: ReportStructure, context: string, attachments: Attachment[], instructions: string, log: LogCallback): Promise<ReportSection[]> => {
   const ai = getClient();
   const baseInstruction = SECTION_AGENT_INSTRUCTION.replace('${userInstructions}', instructions);
 
   const sectionPromises = structure.sections.map(async (sectionPlan) => {
      log(`Drafting Component: ${sectionPlan.title}`, 'ai', sectionPlan.title);
      try {
+         const parts = constructParts(`
+            SECTION: ${sectionPlan.title}
+            GUIDANCE: ${sectionPlan.guidance}
+            CONTEXT: ${context.substring(0, 30000)}
+         `, attachments);
+
          const res = await ai.models.generateContent({
             model: 'gemini-3-pro-preview',
-            contents: [{ role: 'user', parts: [{ text: `
-                SECTION: ${sectionPlan.title}
-                GUIDANCE: ${sectionPlan.guidance}
-                CONTEXT: ${context.substring(0, 30000)}
-            ` }] }],
+            contents: [{ role: 'user', parts: parts }],
             config: {
                 systemInstruction: baseInstruction,
                 responseMimeType: "application/json",
@@ -415,7 +438,19 @@ export const performSearchQuery = async (query: string): Promise<string> => {
 export const sendChatMessage = async (chat: Chat, message: string, attachments: Attachment[] = []) => {
     const parts: any[] = [];
     if (message.trim()) parts.push({ text: message });
-    attachments.forEach(att => parts.push({ inlineData: { data: att.base64, mimeType: att.mimeType } }));
+    attachments.forEach(att => {
+        if (att.textContent) {
+            let docContent = `\n[ATTACHED DOCUMENT: ${att.file.name}]\n`;
+            if (att.context) docContent += `[USER CONTEXT: ${att.context}]\n`;
+            docContent += `${att.textContent}\n[END DOCUMENT]\n`;
+            parts.push({ text: docContent });
+        } else if (att.base64) {
+            if (att.context) {
+                parts.push({ text: `[CONTEXT FOR NEXT MEDIA ASSET (${att.file.name}): ${att.context}]` });
+            }
+            parts.push({ inlineData: { data: att.base64, mimeType: att.mimeType } });
+        }
+    });
     return await chat.sendMessage({ message: parts });
 };
 

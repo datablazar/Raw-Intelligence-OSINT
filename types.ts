@@ -72,9 +72,11 @@ export interface HistoryItem {
 
 export interface Attachment {
   file: File;
-  base64: string;
+  base64?: string;
   mimeType: string;
-  type: 'image' | 'audio' | 'video' | 'file';
+  type: 'image' | 'audio' | 'video' | 'file' | 'text';
+  textContent?: string;
+  context?: string;
 }
 
 export interface ChatMessage {
