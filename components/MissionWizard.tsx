@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MissionConfig, IntelligenceReport, ResearchPlan, Entity, SourceReference, ReportStructure, ReportSection, ProcessingLog } from '../types';
-import { runStrategyPhase, runResearchPhase, runStructurePhase, runDraftingPhase, runFinalizePhase, extractUrls, generateMoreQueries } from '../services/geminiService';
+import { runStrategyPhase, runResearchPhase, runStructurePhase, runDraftingPhase, runFinalizePhase, extractUrls, generateMoreQueries, analyzeResearchCoverage, identifyStructuralGaps, conductTacticalResearch } from '../services/geminiService';
 import { BrainCircuit, Globe, FileText, CheckCircle2, ChevronRight, Edit2, Search, Trash2, Shield, Activity, Terminal, ArrowRight, Play, Sparkles, Loader2 } from 'lucide-react';
 
 interface MissionWizardProps {
@@ -112,10 +112,45 @@ const MissionWizard: React.FC<MissionWizardProps> = ({ config, onComplete, onCan
         addLog("Initiating Phase 2: Active Research...", 'network');
         try {
           const urls = extractUrls(config.rawText);
-          const result = await runResearchPhase(urls, plan.searchQueries || [], addLog);
-          setResearchData(result);
-          setEditableSources(result.sources); // Initialize editable sources
-          addLog(`Gathered ${result.sources.length} sources. Waiting for Analyst Review.`, 'success');
+          
+          // Step 2.1: Initial Broad/Targeted Research
+          addLog("Executing Initial Research Plan...", 'network');
+          const initialResult = await runResearchPhase(urls, plan.searchQueries || [], addLog);
+          
+          // Step 2.2: Feedback Loop / Coverage Analysis
+          addLog("Analyzing Intel Coverage against Mission Objectives...", 'ai');
+          const gapQueries = await analyzeResearchCoverage(
+              initialResult.context, 
+              plan.informationGaps || [], 
+              config.instructions
+          );
+
+          let finalContext = initialResult.context;
+          let finalSources = initialResult.sources;
+
+          // Step 2.3: Iterative Deep Dive (if needed)
+          if (gapQueries.length > 0) {
+              addLog(`Identified coverage gaps. Executing ${gapQueries.length} targeted deep-dive queries...`, 'network');
+              const tacticalResult = await conductTacticalResearch(gapQueries, addLog);
+              
+              // Merge Results
+              finalContext = finalContext + "\n\n=== TACTICAL FOLLOW-UP ===\n" + tacticalResult.context;
+              // Merge sources ensuring uniqueness
+              const existingUrls = new Set(finalSources.map(s => s.url));
+              tacticalResult.sources.forEach(s => {
+                  if (!existingUrls.has(s.url)) {
+                      finalSources.push(s);
+                      existingUrls.add(s.url);
+                  }
+              });
+              addLog("Iterative Research Complete. Coverage Gaps Addressed.", 'success');
+          } else {
+              addLog("Initial research coverage deemed sufficient.", 'success');
+          }
+          
+          setResearchData({ context: finalContext, sources: finalSources });
+          setEditableSources(finalSources);
+          addLog(`Intel gathering complete. ${finalSources.length} assets secured. Waiting for Analyst Review.`, 'success');
           setStep('review_research');
         } catch (e) {
           addLog(`Research Error: ${e}`, 'info');
@@ -135,7 +170,6 @@ const MissionWizard: React.FC<MissionWizardProps> = ({ config, onComplete, onCan
       const execute = async () => {
         addLog("Initiating Phase 3: Structural Design...", 'planning');
         try {
-          // Filter context based on active sources is hard (text blob), but we can inject a manifest
           const activeSources = editableSources.filter(s => s.active !== false);
           const sourceManifest = activeSources.map((s, i) => `[Source ${i+1}] ${s.title} (${s.url})`).join('\n');
           
@@ -164,9 +198,45 @@ ${researchData.context}`;
   }, [step, researchData]);
 
   // --- PHASE 4 & 5: DRAFTING & FINALIZE ---
-  const handleApproveStructure = () => {
+  const handleApproveStructure = async () => {
     if (!editableStructure) return;
     setStructure(editableStructure);
+    
+    // NEW STEP: Pre-Drafting Structural Coverage Check
+    if (researchData) {
+        addLog("Verifying Structural Coverage against Intelligence...", 'ai');
+        try {
+            const missingQueries = await identifyStructuralGaps(editableStructure, researchData.context);
+            if (missingQueries.length > 0) {
+                addLog(`Detected data voids for new sections. Executing ${missingQueries.length} tactical queries...`, 'network');
+                // Run tactical research
+                const tacticalResult = await conductTacticalResearch(missingQueries, addLog);
+                
+                // Update Context with new findings
+                const updatedContext = researchData.context + "\n\n=== STRUCTURAL GAP FILL ===\n" + tacticalResult.context;
+                
+                // Update Sources silently (or log it)
+                const currentSourceUrls = new Set(researchData.sources.map(s => s.url));
+                const newSources = [...researchData.sources];
+                tacticalResult.sources.forEach(s => {
+                    if (!currentSourceUrls.has(s.url)) {
+                        newSources.push({ ...s, active: true });
+                        currentSourceUrls.add(s.url);
+                    }
+                });
+                
+                setResearchData({ context: updatedContext, sources: newSources });
+                setEditableSources(newSources); // Ensure drafting uses updated sources list if needed
+                addLog("Data voids filled. Proceeding to drafting.", 'success');
+            } else {
+                addLog("Structure fully supported by existing intelligence.", 'success');
+            }
+        } catch (e) {
+            console.error("Gap check failed", e);
+            addLog("Gap check warning. Proceeding with existing intel.", 'info');
+        }
+    }
+    
     setStep('drafting');
   };
 

@@ -85,6 +85,7 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
 
   if (!report) return null;
 
+  // Banner color logic kept in case needed elsewhere, but banner component removed from view
   const getClassificationColor = (cls: Classification) => {
     switch (cls) {
       case Classification.TOP_SECRET: return 'text-red-700 border-red-700 bg-red-50';
@@ -174,12 +175,21 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
     entityFooterRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  // Helper to strip markdown artifacts
+  const cleanSectionContent = (content: string) => {
+    return content
+      // Remove header-style lines (e.g., ### Title or **SECTION: Title**)
+      .replace(/^#{1,6}\s*.*$/gm, '')
+      .replace(/^\*\*SECTION:.*$/gim, '')
+      .replace(/^SECTION:.*$/gim, '')
+      .trim();
+  };
+
   const renderTextWithEntities = (text: string, keyPrefix: any) => {
       if (!report.entities || report.entities.length === 0) return text;
       
       const sortedEntities = [...report.entities].map((e, i) => ({...e, idx: i})).sort((a, b) => b.name.length - a.name.length);
       const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      // Use capture group to split but keep delimiter
       const pattern = new RegExp(`(${sortedEntities.map(e => escapeRegExp(e.name)).join('|')})`, 'gi');
       
       const parts = text.split(pattern);
@@ -206,17 +216,18 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
   };
 
   const renderEnrichedContent = (content: string | any) => {
-    // Safety check for non-string content (e.g. array when type mismatch occurs)
     if (typeof content !== 'string') {
         if (Array.isArray(content)) {
-            // Join array for display in a text block, or fallback
             return renderEnrichedContent(content.join('\n'));
         }
         return String(content || "");
     }
 
+    // Clean artifacts first
+    const cleaned = cleanSectionContent(content);
+
     const urlRegex = /(https?:\/\/[^\s]+)/g;
-    const parts = content.split(urlRegex);
+    const parts = cleaned.split(urlRegex);
     
     return parts.map((part, i) => {
       if (part.match(urlRegex)) {
@@ -329,25 +340,31 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
           
           {/* VIEW: REPORT */}
           {activeTab === 'report' && (
-            <div className="bg-white w-full max-w-[210mm] min-h-[297mm] shadow-lg p-12 text-gray-900 font-serif relative">
-               {/* Classification Banner */}
-               <div className={`text-center border-b-2 mb-8 pb-4 ${getClassificationColor(report.classification)}`}>
-                  <h1 className="font-bold text-xl uppercase tracking-[0.2em]">{report.classification}</h1>
-                  <p className="text-xs font-sans text-gray-500 uppercase tracking-wider mt-1">{report.handlingInstructions}</p>
+            <div className="bg-white w-full max-w-[210mm] min-h-[297mm] shadow-lg p-12 text-gray-900 font-sans relative">
+               
+               {/* 
+                 REMOVED TOP CLASSIFICATION BANNER AS REQUESTED 
+                 The user explicitly asked to "Remove this" pointing to the top banner.
+               */}
+               <div className="mb-4">
+                  {/* Minimal top classification text instead of big banner, or nothing if strict removal is needed. 
+                      Keeping a very subtle indicator for print mode only if needed, but for now completely removing the block. */}
                </div>
 
                {/* Meta Table */}
                <div className="grid grid-cols-2 gap-y-2 text-sm font-sans border-b border-gray-100 pb-6 mb-8">
-                  {/* Removed Report Ref and kept layout balance */}
-                  <div></div>
+                  <div className="flex flex-col">
+                    <span className="text-[10px] text-gray-400 font-bold uppercase">Classification</span>
+                    <span className="font-bold text-uk-navy">{report.classification}</span>
+                  </div>
                   <div className="flex flex-col text-right"><span className="text-[10px] text-gray-400 font-bold uppercase">Date</span><span className="font-mono">{report.dateOfInformation}</span></div>
-                  <div className="col-span-2 mt-2"><span className="text-[10px] text-gray-400 font-bold uppercase">Subject</span><span className="font-bold text-lg text-uk-navy block leading-tight">{report.reportTitle.replace(/^INTREP:?\s*/i, '')}</span></div>
+                  <div className="col-span-2 mt-4"><span className="text-[10px] text-gray-400 font-bold uppercase">Subject</span><span className="font-bold text-xl text-uk-navy block leading-tight">{report.reportTitle.replace(/^INTREP:?\s*/i, '')}</span></div>
                </div>
 
                {/* Executive Summary */}
-               <div className="mb-8 bg-gray-50 p-4 border-l-4 border-uk-blue rounded-r">
+               <div className="mb-8 bg-gray-50 p-6 border-l-4 border-uk-blue rounded-r-lg">
                  <h3 className="font-sans font-bold text-xs uppercase text-uk-blue mb-2 tracking-wider">Executive Summary</h3>
-                 <p className="text-sm leading-relaxed font-medium">{renderEnrichedContent(report.executiveSummary)}</p>
+                 <p className="text-sm leading-relaxed font-medium break-words text-justify">{renderEnrichedContent(report.executiveSummary)}</p>
                </div>
 
                {/* Sections */}
@@ -361,13 +378,13 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
                       <button onClick={() => { setEditSectionTitle(section.title); setEditContent(Array.isArray(section.content) ? section.content.join('\n') : section.content); }} className="p-1.5 bg-gray-100 rounded hover:bg-blue-100 text-blue-600"><Pencil className="w-3 h-3"/></button>
                       <button onClick={() => { setRefineSectionTitle(section.title); setRefineInstruction(""); }} className="p-1.5 bg-gray-100 rounded hover:bg-purple-100 text-purple-600"><Sparkles className="w-3 h-3"/></button>
                    </div>
-                   <h3 className="font-sans font-bold text-sm uppercase text-uk-navy mb-3 flex items-center gap-2">
+                   <h3 className="font-sans font-bold text-sm uppercase text-uk-navy mb-3 flex items-center gap-2 border-b border-gray-100 pb-2">
                      <span className="text-gray-400">{idx + 1}.</span> {section.title}
                    </h3>
                    {isListContent ? (
-                     <ul className="list-disc pl-5 space-y-2 text-sm leading-relaxed">
+                     <ul className="list-disc pl-5 space-y-3 text-sm leading-relaxed">
                        {(section.content as string[]).map((item, i) => (
-                         <li key={i} className="group/item relative">
+                         <li key={i} className="group/item relative pl-1 break-words">
                            <span>{renderEnrichedContent(item)}</span>
                            <button onClick={() => handleVerify(item, `v-${idx}-${i}`)} className="ml-2 opacity-0 group-hover/item:opacity-100 text-[10px] uppercase font-bold text-uk-blue hover:underline bg-blue-50 px-1 rounded">Verify</button>
                            {verifications[`v-${idx}-${i}`] && (
@@ -379,7 +396,7 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
                        ))}
                      </ul>
                    ) : (
-                     <p className="text-sm leading-relaxed whitespace-pre-wrap">{renderEnrichedContent(section.content)}</p>
+                     <p className="text-sm leading-relaxed whitespace-pre-wrap break-words text-justify">{renderEnrichedContent(section.content)}</p>
                    )}
                  </div>
                )})}
@@ -392,14 +409,14 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
                     </h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {report.entities.map((ent, i) => (
-                        <div key={i} className="flex gap-3 text-xs p-2 rounded hover:bg-gray-50 border border-transparent hover:border-gray-100 transition-colors">
+                        <div key={i} className="flex gap-3 text-xs p-3 rounded bg-gray-50/50 hover:bg-gray-100 border border-transparent hover:border-gray-200 transition-colors">
                            <span className="flex-shrink-0 text-[10px] font-bold text-gray-400 select-none">E{i + 1}</span>
                            <div>
                               <div className="flex items-center gap-2 mb-1">
                                 <span className="font-bold text-gray-900">{ent.name}</span>
                                 <EntityBadge type={ent.type} threat={ent.threatLevel} />
                               </div>
-                              <p className="text-gray-600 leading-snug">{ent.context}</p>
+                              <p className="text-gray-600 leading-snug break-words">{ent.context}</p>
                            </div>
                         </div>
                       ))}
@@ -428,7 +445,7 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
                                <ExternalLink className="w-3 h-3" />
                              </a>
                            </div>
-                           <p className="text-xs text-gray-600 mt-0.5">{link.summary || "No summary available."}</p>
+                           <p className="text-xs text-gray-600 mt-0.5 break-words">{link.summary || "No summary available."}</p>
                            <p className="text-[10px] text-gray-400 font-mono mt-1 break-all">{link.url}</p>
                          </div>
                        </div>

@@ -1,3 +1,4 @@
+
 import { Type, Schema } from "@google/genai";
 
 // --- GLOBAL SHARED CONTEXT ---
@@ -18,6 +19,12 @@ const CORE_DOCTRINE = `
 export const STRATEGY_AGENT_INSTRUCTION = `
 **ROLE:** Senior Intelligence Planner.
 **TASK:** Analyze raw intelligence to assess source reliability (Admiralty Code), identify information gaps, and formulate a targeted research plan.
+
+**RESEARCH STRATEGY DOCTRINE:**
+- **Cast a Wide Net (Context):** Generate queries to understand the broader geopolitical, social, or historical context of the subject.
+- **Focus the Net (Verification):** Generate specific, targeted queries to verify names, dates, incidents, or technical claims found in the raw data.
+- **Mix of Sources:** Aim for a mix of news, academic, and technical sources in your query formulation.
+
 **USER INSTRUCTIONS:** You must strictly adhere to the following guidance from the user:
 \${userInstructions}
 
@@ -77,6 +84,23 @@ export const SUMMARY_AGENT_INSTRUCTION = `
 \${userInstructions}
 
 ${CORE_DOCTRINE}
+`;
+
+// --- NEW AGENTS FOR REFINED PIPELINE ---
+
+export const GAP_ANALYSIS_INSTRUCTION = `
+**ROLE:** Collection Manager.
+**TASK:** Review the **Gathered Intelligence** against the **Original Information Gaps** and **Mission Instructions**.
+Determine if the current intelligence is sufficient. If critical information is missing, generate **Follow-up Search Queries**.
+If coverage is sufficient, return an empty list.
+`;
+
+export const STRUCTURAL_COVERAGE_INSTRUCTION = `
+**ROLE:** Content Coverage Analyst.
+**TASK:** Review the proposed **Report Structure** against the **Available Research Data**.
+Identify if any proposed section lacks sufficient backing data.
+If a section like "Financial Backers" exists but no financial data is present, generate **Targeted Search Queries** to fill this void.
+Return empty list if all sections are covered.
 `;
 
 // --- SCHEMAS ---
@@ -149,6 +173,13 @@ export const FINAL_METADATA_SCHEMA: Schema = {
     overallConfidence: { type: Type.STRING, enum: ["Low Probability", "Moderate Probability", "High Probability", "Near Certainty"] }
   },
   required: ["classification", "reportTitle", "executiveSummary", "overallConfidence"]
+};
+
+export const QUERIES_SCHEMA: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    queries: { type: Type.ARRAY, items: { type: Type.STRING } }
+  }
 };
 
 // Kept for backward compatibility or chat tools

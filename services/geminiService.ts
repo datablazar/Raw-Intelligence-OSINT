@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type, Chat, FunctionDeclaration } from "@google/genai";
 import { 
   STRATEGY_AGENT_INSTRUCTION, 
@@ -5,11 +6,14 @@ import {
   STRUCTURE_AGENT_INSTRUCTION,
   SECTION_AGENT_INSTRUCTION,
   SUMMARY_AGENT_INSTRUCTION,
+  GAP_ANALYSIS_INSTRUCTION,
+  STRUCTURAL_COVERAGE_INSTRUCTION,
   RESEARCH_PLAN_SCHEMA,
   ENTITY_LIST_SCHEMA,
   STRUCTURE_SCHEMA,
   SECTION_CONTENT_SCHEMA,
-  FINAL_METADATA_SCHEMA
+  FINAL_METADATA_SCHEMA,
+  QUERIES_SCHEMA
 } from "../constants";
 import { IntelligenceReport, Attachment, ResearchPlan, SourceReference, Entity, ReportSection, DeepResearchResult, ReportStructure, ResearchSectionResult } from "../types";
 
@@ -93,12 +97,74 @@ export const generateMoreQueries = async (rawText: string, currentQueries: strin
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     config: {
       responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          queries: { type: Type.ARRAY, items: { type: Type.STRING } }
-        }
-      },
+      responseSchema: QUERIES_SCHEMA,
+      thinkingConfig: { thinkingBudget: 1024 }
+    }
+  });
+
+  const result = JSON.parse(response.text || "{}");
+  return result.queries || [];
+};
+
+// --- NEW HELPER: ANALYZE RESEARCH GAP (FEEDBACK LOOP) ---
+export const analyzeResearchCoverage = async (
+  currentContext: string, 
+  originalGaps: string[], 
+  instructions: string
+): Promise<string[]> => {
+  const ai = getClient();
+  const prompt = `
+    ORIGINAL INFO GAPS: ${JSON.stringify(originalGaps)}
+    MISSION INSTRUCTIONS: ${instructions}
+    
+    GATHERED INTELLIGENCE SUMMARY (First 25k chars):
+    ${currentContext.substring(0, 25000)}
+    
+    TASK: Analyze if the gathered intelligence sufficiently covers the gaps and instructions.
+    If coverage is weak for any critical area, generate 3-5 high-value, specific search queries to target the missing info.
+    If coverage is sufficient, return empty array.
+  `;
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-pro-preview',
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    config: {
+      systemInstruction: GAP_ANALYSIS_INSTRUCTION,
+      responseMimeType: "application/json",
+      responseSchema: QUERIES_SCHEMA,
+      thinkingConfig: { thinkingBudget: 1024 }
+    }
+  });
+
+  const result = JSON.parse(response.text || "{}");
+  return result.queries || [];
+};
+
+// --- NEW HELPER: IDENTIFY STRUCTURAL GAPS (PRE-DRAFTING CHECK) ---
+export const identifyStructuralGaps = async (
+  structure: ReportStructure, 
+  currentContext: string
+): Promise<string[]> => {
+  const ai = getClient();
+  const prompt = `
+    PROPOSED REPORT STRUCTURE:
+    ${JSON.stringify(structure)}
+    
+    AVAILABLE INTELLIGENCE (First 25k chars):
+    ${currentContext.substring(0, 25000)}
+    
+    TASK: Identify if any section in the structure lacks sufficient data in the available intelligence.
+    Generate targeted search queries for any unsupported sections.
+    Return empty array if all sections have data.
+  `;
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-pro-preview',
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    config: {
+      systemInstruction: STRUCTURAL_COVERAGE_INSTRUCTION,
+      responseMimeType: "application/json",
+      responseSchema: QUERIES_SCHEMA,
       thinkingConfig: { thinkingBudget: 1024 }
     }
   });
@@ -120,7 +186,7 @@ export const runResearchPhase = async (urls: string[], queries: string[], log: L
       try {
         const res = await ai.models.generateContent({
           model: 'gemini-3-pro-preview',
-          contents: [{ role: 'user', parts: [{ text: `Analyze ${url}. Extract Title, Summary, and Key Facts. JSON Output.` }] }],
+          contents: [{ role: 'user', parts: [{ text: `Analyze ${url}. Extract Title, Summary, Names, Dates, and Key Events relevant to intelligence reporting. JSON Output.` }] }],
           config: { 
              responseMimeType: "application/json",
              tools: [{ googleSearch: {} }],
@@ -130,7 +196,7 @@ export const runResearchPhase = async (urls: string[], queries: string[], log: L
         const data = JSON.parse(res.text || "{}");
         const title = data.title || formatSourceTitle(url);
         gatheredSources.set(url, { url, title, summary: data.summary || "Analyzed source." });
-        return `[SOURCE: ${title}]\n${data.content || ""}`;
+        return `[SOURCE: ${title}]\n${data.content || JSON.stringify(data)}`;
       } catch (e) {
         gatheredSources.set(url, { url, title: formatSourceTitle(url), summary: "Source accessed." });
         return `[SOURCE ERROR: ${url}]`;
@@ -142,17 +208,16 @@ export const runResearchPhase = async (urls: string[], queries: string[], log: L
 
   // B. Google Search
   if (queries.length > 0) {
-    // Increased limit to 15 to accommodate user-added queries
     const queryTasks = queries.slice(0, 15).map(async (q) => {
       log(`Searching: ${q}`, 'network', 'Search Grid');
       try {
         const res = await ai.models.generateContent({
           model: 'gemini-3-pro-preview',
-          contents: [{ role: 'user', parts: [{ text: `Search for and provide a summary of: "${q}".` }] }],
+          contents: [{ role: 'user', parts: [{ text: `Search for: "${q}". Provide a detailed intelligence summary including specific dates, entities, and confirmed events.` }] }],
           config: { tools: [{ googleSearch: {} }] }
         });
         
-        // 1. Capture Grounding Metadata (Structured)
+        // 1. Capture Grounding Metadata
         res.candidates?.[0]?.groundingMetadata?.groundingChunks?.forEach((c: any) => {
            if (c.web?.uri && !c.web.uri.includes('vertexaisearch')) {
                gatheredSources.set(c.web.uri, {
@@ -163,11 +228,10 @@ export const runResearchPhase = async (urls: string[], queries: string[], log: L
            }
         });
 
-        // 2. Capture URLs in text (Fallback for when grounding metadata is sparse)
+        // 2. Capture URLs in text
         const textResponse = res.text || "";
         const fallbackUrls = extractUrls(textResponse);
         fallbackUrls.forEach(u => {
-             // Basic filtering to avoid common false positives or duplicates
              if (u.length > 10 && !gatheredSources.has(u)) {
                 gatheredSources.set(u, {
                    url: u,
@@ -177,7 +241,7 @@ export const runResearchPhase = async (urls: string[], queries: string[], log: L
              }
         });
 
-        return `[SEARCH: ${q}]\n${textResponse}`;
+        return `[SEARCH QUERY: ${q}]\n${textResponse}`;
       } catch { return ""; }
     });
     const results = await Promise.all(queryTasks);
@@ -185,6 +249,12 @@ export const runResearchPhase = async (urls: string[], queries: string[], log: L
   }
 
   return { context: contextParts.join("\n\n"), sources: Array.from(gatheredSources.values()) };
+};
+
+// --- TACTICAL RESEARCH BURST (For Gap Filling) ---
+export const conductTacticalResearch = async (queries: string[], log: LogCallback): Promise<DeepResearchResult> => {
+    // Re-use the existing logic but optimized for speed (no URL deep reads, just search)
+    return runResearchPhase([], queries, log);
 };
 
 // --- PHASE 3: STRUCTURE ---
@@ -208,19 +278,28 @@ export const runStructurePhase = async (context: string, instructions: string, l
 // --- PHASE 4: DRAFTING ---
 export const runDraftingPhase = async (structure: ReportStructure, context: string, instructions: string, log: LogCallback): Promise<ReportSection[]> => {
   const ai = getClient();
-  const instructionWithUser = SECTION_AGENT_INSTRUCTION.replace('${userInstructions}', instructions);
+  // Enhanced instructions to prevent header repetition and markdown artifacts
+  const baseInstruction = SECTION_AGENT_INSTRUCTION.replace('${userInstructions}', instructions);
+  const strictInstruction = `${baseInstruction}
+  
+  **IMPORTANT FORMATTING RULES:**
+  1. Do NOT repeat the section title in your output.
+  2. Do NOT use markdown headers (e.g., #, ##, ###).
+  3. Start directly with the content paragraphs or list items.
+  4. Output purely the body content for the section.
+  `;
 
   const sectionPromises = structure.sections.map(async (sectionPlan) => {
      log(`Drafting: ${sectionPlan.title}`, 'ai', sectionPlan.title);
      const res = await ai.models.generateContent({
         model: 'gemini-3-pro-preview',
         contents: [{ role: 'user', parts: [{ text: `
-            SECTION: ${sectionPlan.title}
-            GUIDANCE: ${sectionPlan.guidance}
+            SECTION TITLE: ${sectionPlan.title}
+            SPECIFIC GUIDANCE: ${sectionPlan.guidance}
             CONTEXT: ${context.substring(0, 30000)}
         ` }] }],
         config: {
-            systemInstruction: instructionWithUser,
+            systemInstruction: strictInstruction,
             responseMimeType: "application/json",
             responseSchema: SECTION_CONTENT_SCHEMA,
             thinkingConfig: { thinkingBudget: 2048 }
