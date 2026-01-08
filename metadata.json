@@ -1,0 +1,5 @@
+{
+  "name": "Sentinel - UK Intelligence Reporter",
+  "description": "Transforms raw intelligence data into professional, UK-standard intelligence reports (INTREP) using advanced generative AI.",
+  "requestFramePermissions": []
+}
