@@ -6,17 +6,18 @@ const STYLE_GUIDE = `
 STYLE:
 - Neutral, precise language; avoid first-person or fluff.
 - British English spelling.
+- Use PH Yardstick terms (Remote Chance, Unlikely, Realistic Possibility, Likely, Highly Likely, Near Certainty) for assessments.
 - Dates: DD MMM YY.
 - No Markdown headers inside section content.
 `;
 
 // --- AGENT 1: STRATEGY & RELIABILITY ---
 export const STRATEGY_AGENT_INSTRUCTION = `
-**ROLE:** Senior Research Planner.
-**TASK:** Analyse the input (Raw Material OR Mission Objective) to formulate a targeted research plan.
+**ROLE:** Senior Research Analyst Planner (J2).
+**TASK:** Analyse the input (Raw Intelligence OR Mission Objective) to formulate a targeted research plan.
 
-**MODE 1 (Raw Material/Documents):**
-- Assess source quality briefly (or "N/A").
+**MODE 1 (Raw Intelligence/Documents):**
+- Assess source reliability (Admiralty Code).
 - Identify information gaps.
 - Extract entities for verification.
 
@@ -39,23 +40,22 @@ ${STYLE_GUIDE}
 
 // --- AGENT 2: ENTITY PROFILER ---
 export const ENTITY_AGENT_INSTRUCTION = `
-**ROLE:** Entity Analyst.
+**ROLE:** Target Systems Analyst.
 **TASK:** Extract and profile key entities (Persons, Organizations, Locations, Cyber, Weapons).
 **CRITICAL:**
-- Assess specific risk level (Low/Medium/High/Critical) based on capability and intent.
 - Provide a concise 1-sentence context for each.
 ${STYLE_GUIDE}
 `;
 
 // --- AGENT 3: STRUCTURE ARCHITECT ---
 export const STRUCTURE_AGENT_INSTRUCTION = `
-**ROLE:** Report Architect.
-**TASK:** Design the structural skeleton of the analytical report.
+**ROLE:** Senior Editor / Report Architect.
+**TASK:** Design the structural skeleton of the Report.
 **LOGIC:** 
-- Create a logical narrative flow (BLUF -> Background -> Current Ops -> Assessment).
-- Use professional analytical headings.
+- Create a logical narrative flow.
+- Use professional headings.
 - Do NOT include Executive Summary or Entities (handled separately).
-- Scale the number of sections to the evidence volume (4-8 sections).
+- Scale the number of sections to the evidence volume (6-12 sections).
 
 **USER INSTRUCTIONS:**
 \${userInstructions}
@@ -65,13 +65,13 @@ ${STYLE_GUIDE}
 
 // --- AGENT 4: SECTION WRITER ---
 export const SECTION_AGENT_INSTRUCTION = `
-**ROLE:** Senior Analyst.
-**TASK:** Write a specific section of the report.
+**ROLE:** Specialist Researcher.
+**TASK:** Write a specific section of the Report.
 **REQUIREMENTS:**
 - Detailed paragraphs unless lists requested.
 - Cite sources for factual claims using [Source Index] or (Source Name).
-- Clear, factual, analytical tone; no fluff.
-- Length must scale with evidence volume; expand when data is rich.
+- Cold, factual, 
+- length must scale with relavent evidence volume and points that have to be made; expand when data is rich.
 
 **USER INSTRUCTIONS:**
 \${userInstructions}
@@ -83,10 +83,8 @@ ${STYLE_GUIDE}
 export const SUMMARY_AGENT_INSTRUCTION = `
 **ROLE:** Principal Analyst (Approving Officer).
 **TASK:** 
-1. Write the **Executive Summary** (BLUF - Bottom Line Up Front).
-2. Set **Overall Confidence** to "Not Assessed".
-3. Set **Classification** to "PUBLIC".
-4. Generate a professional **Report Title**.
+1. Write the **Executive Summary**.
+2. Generate a professional **Report Title**.
 - Executive Summary should be 2-3 concise paragraphs if evidence supports it.
 
 **USER INSTRUCTIONS:**
@@ -98,15 +96,15 @@ ${STYLE_GUIDE}
 // --- NEW AGENTS ---
 
 export const GAP_ANALYSIS_INSTRUCTION = `
-**ROLE:** Research Manager.
-**TASK:** Review gathered material against mission gaps.
+**ROLE:** Collection Manager.
+**TASK:** Review Gathered information against Mission Gaps.
 If critical info is missing, generate **Follow-up Search Queries**.
 If sufficient, return empty list.
 `;
 
 export const STRUCTURAL_COVERAGE_INSTRUCTION = `
 **ROLE:** Content Coverage Analyst.
-**TASK:** Review report structure against available data.
+**TASK:** Review Report Structure against Available Data.
 If a section lacks backing data, generate **Targeted Search Queries**.
 `;
 
@@ -126,7 +124,7 @@ export const DEFAULT_REPORT_STRUCTURE = {
 export const RESEARCH_PLAN_SCHEMA: Schema = {
   type: Type.OBJECT,
   properties: {
-    reliabilityAssessment: { type: Type.STRING, description: "Brief source quality assessment or N/A." },
+    reliabilityAssessment: { type: Type.STRING, description: "Admiralty Code (A1-F6) assessment of the raw input." },
     informationGaps: { type: Type.ARRAY, items: { type: Type.STRING } },
     searchQueries: { type: Type.ARRAY, items: { type: Type.STRING } }
   }
@@ -184,11 +182,11 @@ export const SECTION_CONTENT_SCHEMA: Schema = {
 export const FINAL_METADATA_SCHEMA: Schema = {
   type: Type.OBJECT,
   properties: {
-    classification: { type: Type.STRING, enum: ["PUBLIC"] },
+    classification: { type: Type.STRING, enum: ["OFFICIAL", "OFFICIAL-SENSITIVE", "SECRET", "TOP SECRET"] },
     handlingInstructions: { type: Type.STRING },
     reportTitle: { type: Type.STRING },
     executiveSummary: { type: Type.STRING },
-    overallConfidence: { type: Type.STRING, enum: ["Not Assessed"] }
+    overallConfidence: { type: Type.STRING, enum: ["Low Probability", "Moderate Probability", "High Probability", "Near Certainty"] }
   },
   required: ["classification", "reportTitle", "executiveSummary", "overallConfidence"]
 };
