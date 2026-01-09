@@ -16,7 +16,7 @@ import {
   QUERIES_SCHEMA, 
   DEFAULT_REPORT_STRUCTURE 
 } from "../constants";
-import { IntelligenceReport, Attachment, ResearchPlan, SourceReference, Entity, ReportSection, DeepResearchResult, ReportStructure, ResearchSectionResult, FailedSource } from "../types";
+import { IntelligenceReport, Attachment, ResearchPlan, SourceReference, Entity, ReportSection, DeepResearchResult, ReportStructure, ReportStructureItem, ResearchSectionResult, FailedSource } from "../types";
 
 // --- CONFIGURATION ---
 // Primary Models
@@ -131,6 +131,11 @@ const safeParseJSON = <T>(text: string, fallback: T): T => {
 };
 
 type LogCallback = (message: string, type: 'info' | 'network' | 'ai' | 'success' | 'planning' | 'synthesizing', details?: string[]) => void;
+
+export type GeminiTestAdapters = {
+  generateSafe?: typeof generateSafe;
+  executeSearchVector?: typeof executeSearchVector;
+};
 
 const constructParts = (text: string, attachments: Attachment[] = []) => {
   const parts: any[] = [{ text }];
@@ -282,19 +287,104 @@ export const runResearchPhase = async (
   queries: string[],
   log: LogCallback,
   useFallback = false,
-  mission = ""
+  mission = "",
+  adapters?: GeminiTestAdapters
 ): Promise<DeepResearchResult> => {
   const MAX_RESEARCH_DEPTH = 4;
+  const MAX_URL_CONCURRENCY = 5;
   const contextParts: string[] = [];
   const gatheredSources: Map<string, SourceReference> = new Map();
   const failedUrls: FailedSource[] = [];
   const visitedQueries = new Set<string>();
-  const visitedUrls = new Set<string>();
   const modelSettings = getModelConfig(useFallback, 'fast');
+  const contextSourceIds = new Set<string>();
+  const generateSafeAdapter = adapters?.generateSafe ?? generateSafe;
+  const executeSearchVectorAdapter = adapters?.executeSearchVector ?? executeSearchVector;
 
-  const addSource = (source: SourceReference) => {
+  type SourceStatus = 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
+  type SourceRegistryEntry = {
+    url: string;
+    status: SourceStatus;
+    title?: string;
+    summary?: string;
+    lastError?: string;
+  };
+  const sourceRegistry = new Map<string, SourceRegistryEntry>();
+  const citationDirectiveUrl = "https://directive.local/citation-format";
+
+  const buildCitationBlock = (url: string, title: string, content: string) => {
+    const safeTitle = title?.trim() || "External Source";
+    const safeContent = content?.trim() ? content.trim() : "No extractable content.";
+    return `[[SOURCE_ID: ${url}]]\n[[TITLE: ${safeTitle}]]\n${safeContent}\n[[END_SOURCE]]`;
+  };
+
+  const ensureCitationDirective = () => {
+    if (contextSourceIds.has(citationDirectiveUrl)) return;
+    const directiveContent = [
+      "CITATION FORMAT REQUIRED:",
+      "Each source MUST be wrapped as:",
+      "[[SOURCE_ID: <url>]]",
+      "[[TITLE: <title>]]",
+      "<extracted_content>",
+      "[[END_SOURCE]]"
+    ].join("\n");
+    contextParts.push(buildCitationBlock(citationDirectiveUrl, "Citation Format", directiveContent));
+    contextSourceIds.add(citationDirectiveUrl);
+  };
+
+  const appendCitationBlock = (url: string, title: string, content: string) => {
+    if (!url || contextSourceIds.has(url)) return;
+    ensureCitationDirective();
+    contextParts.push(buildCitationBlock(url, title, content));
+    contextSourceIds.add(url);
+  };
+
+  const setRegistryStatus = (url: string, status: SourceStatus, update?: Partial<SourceRegistryEntry>) => {
+    const existing = sourceRegistry.get(url);
+    sourceRegistry.set(url, {
+      url,
+      status,
+      title: update?.title || existing?.title,
+      summary: update?.summary || existing?.summary,
+      lastError: update?.lastError || existing?.lastError
+    });
+  };
+
+  const upsertSource = (source: SourceReference) => {
     if (!source.url || !isValidSourceUrl(source.url)) return;
-    gatheredSources.set(source.url, source);
+    const existing = gatheredSources.get(source.url);
+    gatheredSources.set(source.url, {
+      url: source.url,
+      title: source.title || existing?.title,
+      summary: source.summary || existing?.summary
+    });
+  };
+
+  const registerDiscoveredSource = (source: SourceReference) => {
+    if (!source.url || !isValidSourceUrl(source.url)) return;
+    upsertSource(source);
+    const registryEntry = sourceRegistry.get(source.url);
+    if (!registryEntry) {
+      sourceRegistry.set(source.url, {
+        url: source.url,
+        status: 'QUEUED',
+        title: source.title,
+        summary: source.summary
+      });
+      return;
+    }
+    if (registryEntry.status === 'COMPLETED' || registryEntry.status === 'FAILED') return;
+    sourceRegistry.set(source.url, {
+      ...registryEntry,
+      title: registryEntry.title || source.title,
+      summary: registryEntry.summary || source.summary
+    });
+  };
+
+  const markSourceCompleted = (url: string, title: string, summary: string) => {
+    if (!url || !isValidSourceUrl(url)) return;
+    upsertSource({ url, title, summary });
+    setRegistryStatus(url, 'COMPLETED', { title, summary });
   };
 
   const addFailedUrl = (url: string, reason: string, isHighValue: boolean) => {
@@ -303,37 +393,63 @@ export const runResearchPhase = async (
     failedUrls.push({ url, reason, isHighValue });
   };
 
+  const runWithConcurrency = async <T,>(items: T[], limit: number, handler: (item: T) => Promise<void>) => {
+    if (items.length === 0) return;
+    let nextIndex = 0;
+    const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (true) {
+        const currentIndex = nextIndex++;
+        if (currentIndex >= items.length) break;
+        await handler(items[currentIndex]);
+      }
+    });
+    await Promise.all(workers);
+  };
+
   const harvest = async (urlBatch: string[], queryBatch: string[]) => {
-    const uniqueUrls = urlBatch.filter(url => url && !visitedUrls.has(url));
-    uniqueUrls.forEach(url => visitedUrls.add(url));
+    const uniqueUrls = urlBatch
+      .map(url => url.trim())
+      .filter(Boolean);
+    const urlsToProcess = new Set<string>();
 
-    if (uniqueUrls.length > 0) {
-      const urlTasks = uniqueUrls.map(async (url) => {
-        log(`Interrogating Direct Source: ${url}`, 'network');
-        try {
-          const res = await generateSafe({
-            model: modelSettings.model, 
-            contents: [{ role: 'user', parts: [{ text: `Analyze ${url}. Extract Title, Summary, Names, Dates, and Key Events. JSON Output.` }] }],
-            config: { ...CONFIG_EXTRACTION, tools: [{ googleSearch: {} }] }
-          });
-          
-          if (!res.text) throw new Error("Empty response");
+    uniqueUrls.forEach(url => {
+      if (!isValidSourceUrl(url)) {
+        addFailedUrl(url, "Invalid or unsupported source URL", true);
+        setRegistryStatus(url, 'FAILED', { lastError: "Invalid or unsupported source URL" });
+        return;
+      }
+      const registryEntry = sourceRegistry.get(url);
+      if (registryEntry?.status === 'PROCESSING' || registryEntry?.status === 'COMPLETED' || registryEntry?.status === 'FAILED') {
+        return;
+      }
+      if (!registryEntry) setRegistryStatus(url, 'QUEUED');
+      urlsToProcess.add(url);
+    });
 
-          const data = safeParseJSON(res.text || "{}", { title: "", summary: "", content: "" });
-          const title = data.title || formatSourceTitle(url);
-          
-          addSource({ url, title, summary: data.summary || "Analyzed source." });
-          return `[SOURCE: ${title}]\n${data.content || JSON.stringify(data)}`;
-        } catch (e: any) {
-          log(`Failed to access: ${url}`, 'info');
-          addFailedUrl(url, e.message || "Access Denied / Timeout", true);
-          return `[SOURCE ERROR: ${url}]`;
-        }
-      });
-      
-      const urlResults = await Promise.all(urlTasks);
-      contextParts.push(...urlResults);
-    }
+    await runWithConcurrency(Array.from(urlsToProcess), MAX_URL_CONCURRENCY, async (url) => {
+      setRegistryStatus(url, 'PROCESSING');
+      log(`Interrogating Direct Source: ${url}`, 'network');
+      try {
+        const res = await generateSafeAdapter({
+          model: modelSettings.model,
+          contents: [{ role: 'user', parts: [{ text: `Analyze ${url}. Extract Title, Summary, Names, Dates, and Key Events. JSON Output.` }] }],
+          config: { ...CONFIG_EXTRACTION, tools: [{ googleSearch: {} }] }
+        });
+
+        if (!res.text) throw new Error("Empty response");
+
+        const data = safeParseJSON(res.text || "{}", { title: "", summary: "", content: "" });
+        const title = data.title || formatSourceTitle(url);
+        const summary = data.summary || "Analyzed source.";
+        markSourceCompleted(url, title, summary);
+        appendCitationBlock(url, title, data.content || JSON.stringify(data));
+      } catch (e: any) {
+        const reason = e.message || "Access Denied / Timeout";
+        log(`Failed to access: ${url}`, 'info');
+        addFailedUrl(url, reason, true);
+        setRegistryStatus(url, 'FAILED', { lastError: reason });
+      }
+    });
 
     const filteredQueries = queryBatch
       .map(q => q.trim())
@@ -342,14 +458,18 @@ export const runResearchPhase = async (
     filteredQueries.forEach(q => visitedQueries.add(q));
 
     if (filteredQueries.length > 0) {
-      const batchSize = 3; 
+      const batchSize = 3;
       for (let i = 0; i < filteredQueries.length; i += batchSize) {
         const batch = filteredQueries.slice(i, i + batchSize);
-        const batchResults = await Promise.all(batch.map(q => executeSearchVector(q, log, useFallback)));
-        
-        batchResults.forEach(res => {
-          if (res.text) contextParts.push(res.text);
-          res.sources.forEach(addSource);
+        const batchResults = await Promise.all(batch.map(q => executeSearchVectorAdapter(q, log, useFallback)));
+
+        batchResults.forEach((res, index) => {
+          const query = batch[index];
+          if (res.text) {
+            const queryUrl = `https://search.local/query?q=${encodeURIComponent(query)}`;
+            appendCitationBlock(queryUrl, `Search Summary: ${query}`, res.text);
+          }
+          res.sources.forEach(registerDiscoveredSource);
         });
         
         if (i + batchSize < filteredQueries.length) {
@@ -371,6 +491,7 @@ export const runResearchPhase = async (
       `ALREADY ASKED QUERIES: ${JSON.stringify(Array.from(visitedQueries))}`,
       `KNOWN SOURCES:\n${sourcesList || "None"}`,
       `GATHERED CONTEXT (TRIMMED):\n${contextSnippet || "None"}`,
+      "CITATION FORMAT IS MANDATORY: [[SOURCE_ID: <url>]] [[TITLE: <title>]] <extracted_content> [[END_SOURCE]].",
       "TASK: Review the information gathered so far against the User's Mission. Are there critical gaps? If yes, what specific questions do we need to ask next?",
       "Return JSON in the schema: {\"queries\": [\"...\"]}.",
       "If no gaps, return {\"queries\": []}.",
@@ -378,7 +499,7 @@ export const runResearchPhase = async (
     ].join("\n\n");
 
     try {
-      const response = await generateSafe({
+      const response = await generateSafeAdapter({
         model: MODEL_QUALITY,
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: {
@@ -449,39 +570,132 @@ export const runStructurePhase = async (context: string, attachments: Attachment
 };
 
 // --- PHASE 4: DRAFTING ---
-export const runDraftingPhase = async (structure: ReportStructure, context: string, attachments: Attachment[], instructions: string, log: LogCallback, useFallback = false): Promise<ReportSection[]> => {
+export const runDraftingPhase = async (
+  structure: ReportStructure,
+  context: string,
+  attachments: Attachment[],
+  instructions: string,
+  log: LogCallback,
+  useFallback = false,
+  adapters?: GeminiTestAdapters
+): Promise<ReportSection[]> => {
   const baseInstruction = SECTION_AGENT_INSTRUCTION.replace('${userInstructions}', instructions);
   const results: ReportSection[] = [];
   const modelSettings = getModelConfig(useFallback, 'quality');
-  
+  const generateSafeAdapter = adapters?.generateSafe ?? generateSafe;
+  const editorInstruction = `
+ROLE: Senior Intelligence Editor.
+TASK: Audit the draft against doctrine and evidence.
+CHECKS REQUIRED:
+1) Missing citations for factual claims (use [Source X] where applicable).
+2) Subjective or speculative language.
+3) Logical gaps or unsupported assertions.
+OUTPUT: Provide a verdict and corrective feedback.
+`;
+
+  const REVIEW_VERDICT_SCHEMA = {
+    type: Type.OBJECT,
+    properties: {
+      verdict: { type: Type.STRING, enum: ["Approved", "Rejected"] },
+      feedback: { type: Type.STRING }
+    },
+    required: ["verdict", "feedback"]
+  };
+
+  const MAX_REVISIONS = 2;
+
+  const normaliseDraftContent = (content: string | string[]) => {
+    if (Array.isArray(content)) return content.join("\n");
+    return content;
+  };
+
+  const buildDraftPrompt = (sectionPlan: ReportStructureItem, draft?: string, feedback?: string) => {
+    const basePrompt = [
+      `SECTION: ${sectionPlan.title}`,
+      `GUIDANCE: ${sectionPlan.guidance}`,
+      `CONTEXT: ${context.substring(0, 30000)}`
+    ];
+
+    if (draft && feedback) {
+      basePrompt.push(
+        "REVISION TASK: Update the draft to resolve the editor feedback.",
+        `PREVIOUS DRAFT:\n${draft}`,
+        `EDITOR FEEDBACK:\n${feedback}`
+      );
+    }
+
+    return basePrompt.join("\n");
+  };
+
+  const generateSectionDraft = async (sectionPlan: ReportStructureItem, draft?: string, feedback?: string): Promise<string | string[]> => {
+    const parts = constructParts(buildDraftPrompt(sectionPlan, draft, feedback), attachments);
+
+    const res = await generateSafeAdapter({
+      model: modelSettings.model,
+      contents: [{ role: 'user', parts: parts }],
+      config: {
+        ...modelSettings.config,
+        systemInstruction: baseInstruction,
+        responseSchema: SECTION_CONTENT_SCHEMA,
+      }
+    });
+
+    const contentData = safeParseJSON(res.text || "{}", { content: "Data insufficient." });
+    return contentData.content;
+  };
+
+  const reviewDraft = async (sectionPlan: ReportStructureItem, draft: string) => {
+    const contextSnippet = context.length > 12000 ? context.slice(-12000) : context;
+    const prompt = [
+      `SECTION: ${sectionPlan.title}`,
+      `DRAFT:\n${draft}`,
+      `SOURCE CONTEXT (TRIMMED):\n${contextSnippet}`,
+      `INSTRUCTIONS: ${instructions}`,
+      "Provide verdict and feedback. Use JSON schema."
+    ].join("\n\n");
+
+    try {
+      const response = await generateSafeAdapter({
+        model: MODEL_QUALITY,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: {
+          ...CONFIG_REASONING,
+          systemInstruction: editorInstruction,
+          responseSchema: REVIEW_VERDICT_SCHEMA,
+        }
+      });
+      return safeParseJSON<{ verdict: "Approved" | "Rejected"; feedback: string }>(response.text || "{}", { verdict: "Approved", feedback: "OK" });
+    } catch (e) {
+      log(`Editor review failed for ${sectionPlan.title}. Defaulting to draft.`, 'info');
+      return null;
+    }
+  };
+
   const BATCH_SIZE = 3;
-  
+
   for (let i = 0; i < structure.sections.length; i += BATCH_SIZE) {
       const batch = structure.sections.slice(i, i + BATCH_SIZE);
       const batchPromises = batch.map(async (sectionPlan) => {
          log(`Drafting Component: ${sectionPlan.title}`, 'ai');
          try {
-             const parts = constructParts(`
-                SECTION: ${sectionPlan.title}
-                GUIDANCE: ${sectionPlan.guidance}
-                CONTEXT: ${context.substring(0, 30000)} 
-             `, attachments);
+             let currentContent = await generateSectionDraft(sectionPlan);
+             for (let attempt = 0; attempt <= MAX_REVISIONS; attempt++) {
+               const review = await reviewDraft(sectionPlan, normaliseDraftContent(currentContent));
+               if (!review || review.verdict === "Approved") {
+                 if (review?.verdict === "Approved") {
+                   log(`Editor approved: ${sectionPlan.title}`, 'success');
+                 }
+                 break;
+               }
+               log(`Revision requested: ${sectionPlan.title}`, 'planning');
+               if (attempt === MAX_REVISIONS) break;
+               currentContent = await generateSectionDraft(sectionPlan, normaliseDraftContent(currentContent), review.feedback);
+             }
 
-             const res = await generateSafe({
-                model: modelSettings.model,
-                contents: [{ role: 'user', parts: parts }],
-                config: {
-                    ...modelSettings.config,
-                    systemInstruction: baseInstruction,
-                    responseSchema: SECTION_CONTENT_SCHEMA,
-                }
-             });
-             
-             const contentData = safeParseJSON(res.text || "{}", { content: "Data insufficient." });
              return {
-                 title: sectionPlan.title,
-                 type: sectionPlan.type,
-                 content: contentData.content
+               title: sectionPlan.title,
+               type: sectionPlan.type,
+               content: currentContent
              } as ReportSection;
 
          } catch (e: any) {
