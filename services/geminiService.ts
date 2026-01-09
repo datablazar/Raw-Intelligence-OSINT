@@ -30,6 +30,52 @@ const CONFIG_EXTRACTION = { responseMimeType: "application/json" };
 const CONFIG_REASONING = { responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 2048 } };
 const CONFIG_DEEP_THINKING = { responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 4096 } };
 
+const SOURCE_ANALYSIS_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    title: { type: Type.STRING },
+    summary: { type: Type.STRING },
+    facts: { type: Type.ARRAY, items: { type: Type.STRING } },
+    entities: { type: Type.ARRAY, items: { type: Type.STRING } },
+    dates: { type: Type.ARRAY, items: { type: Type.STRING } }
+  },
+  required: ["summary", "facts"]
+};
+
+const SEARCH_VECTOR_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    summary: { type: Type.STRING },
+    facts: { type: Type.ARRAY, items: { type: Type.STRING } },
+    sources: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          url: { type: Type.STRING },
+          title: { type: Type.STRING }
+        },
+        required: ["url"]
+      }
+    }
+  },
+  required: ["summary", "facts", "sources"]
+};
+
+const SECTION_DRAFT_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    content: { 
+      anyOf: [
+        { type: Type.STRING },
+        { type: Type.ARRAY, items: { type: Type.STRING } }
+      ]
+    },
+    claims: { type: Type.ARRAY, items: { type: Type.STRING } }
+  },
+  required: ["content", "claims"]
+};
+
 // --- SINGLETON CLIENT ---
 let clientInstance: GoogleGenAI | null = null;
 
@@ -130,6 +176,103 @@ const safeParseJSON = <T>(text: string, fallback: T): T => {
   }
 };
 
+const MAX_FACTS_PER_SOURCE = 8;
+const MAX_EVIDENCE_SOURCES = 6;
+const MAX_EVIDENCE_CONTENT_CHARS = 1200;
+
+const formatEvidenceContent = (summary: string, facts: string[]) => {
+  const trimmedSummary = summary?.trim();
+  const trimmedFacts = facts.map(f => f.trim()).filter(Boolean);
+  return [
+    trimmedSummary ? `SUMMARY: ${trimmedSummary}` : "",
+    ...trimmedFacts.map(f => `- ${f}`)
+  ].filter(Boolean).join("\n");
+};
+
+type ContextSegments = {
+  instructions: string;
+  raw: string;
+  sources: string;
+  research: string;
+};
+
+const extractSegment = (label: string, text: string, nextLabels: string[]) => {
+  const startIndex = text.indexOf(label);
+  if (startIndex === -1) return "";
+  const afterStart = startIndex + label.length;
+  let endIndex = text.length;
+  nextLabels.forEach(next => {
+    const idx = text.indexOf(next, afterStart);
+    if (idx !== -1 && idx < endIndex) endIndex = idx;
+  });
+  return text.slice(afterStart, endIndex).trim();
+};
+
+const parseContextSegments = (context: string): ContextSegments => {
+  const hasMarkers = context.includes("INSTRUCTIONS:") || context.includes("RAW:") || context.includes("RESEARCH:");
+  if (!hasMarkers) {
+    return { instructions: "", raw: "", sources: "", research: context.trim() };
+  }
+  return {
+    instructions: extractSegment("INSTRUCTIONS:", context, ["RAW:", "SOURCES:", "RESEARCH:"]),
+    raw: extractSegment("RAW:", context, ["SOURCES:", "RESEARCH:"]),
+    sources: extractSegment("SOURCES:", context, ["RESEARCH:"]),
+    research: extractSegment("RESEARCH:", context, [])
+  };
+};
+
+type EvidenceBlock = {
+  url: string;
+  title: string;
+  content: string;
+  block: string;
+};
+
+const extractCitationBlocks = (text: string): EvidenceBlock[] => {
+  const blocks: EvidenceBlock[] = [];
+  const regex = /\[\[SOURCE_ID:\s*([^\]]+)\]\]\s*\[\[TITLE:\s*([^\]]+)\]\]\s*([\s\S]*?)\s*\[\[END_SOURCE\]\]/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    const url = match[1].trim();
+    const title = match[2].trim();
+    const rawContent = match[3].trim();
+    const trimmedContent = rawContent.length > MAX_EVIDENCE_CONTENT_CHARS
+      ? `${rawContent.slice(0, MAX_EVIDENCE_CONTENT_CHARS)}...`
+      : rawContent;
+    const block = `[[SOURCE_ID: ${url}]]\n[[TITLE: ${title}]]\n${trimmedContent}\n[[END_SOURCE]]`;
+    if (!url || url.includes("directive.local")) continue;
+    blocks.push({ url, title, content: trimmedContent, block });
+  }
+  return blocks;
+};
+
+const summariseEvidenceBlocks = (blocks: EvidenceBlock[], maxSources = 8, maxFacts = 3) => {
+  const summaries: string[] = [];
+  const selected = blocks.slice(0, maxSources);
+  selected.forEach(block => {
+    const lines = block.content.split("\n").map(line => line.trim()).filter(Boolean);
+    const facts = lines
+      .filter(line => line.startsWith("-") || line.startsWith("*") || /^\d+\./.test(line) || line.startsWith("SUMMARY:"))
+      .map(line => line.replace(/^[-*]\s*/, '').replace(/^\d+\.\s*/, '').replace(/^SUMMARY:\s*/i, ''))
+      .filter(Boolean)
+      .slice(0, maxFacts);
+    const factText = facts.length > 0 ? facts.join("; ") : "Key details extracted.";
+    summaries.push(`- ${block.title}: ${factText}`);
+  });
+  return summaries.join("\n");
+};
+
+const buildStructureContext = (context: string) => {
+  const parsed = parseContextSegments(context);
+  const evidenceBlocks = extractCitationBlocks(parsed.research || context);
+  const evidenceSummary = summariseEvidenceBlocks(evidenceBlocks, 8, 2);
+  const rawSnippet = parsed.raw ? parsed.raw.slice(0, 2000) : "";
+  const parts = [];
+  if (rawSnippet) parts.push(`RAW SNIPPET:\n${rawSnippet}`);
+  if (evidenceSummary) parts.push(`EVIDENCE SUMMARY:\n${evidenceSummary}`);
+  return parts.join("\n\n").trim();
+};
+
 type LogCallback = (message: string, type: 'info' | 'network' | 'ai' | 'success' | 'planning' | 'synthesizing', details?: string[]) => void;
 
 export type GeminiTestAdapters = {
@@ -173,7 +316,7 @@ export const runStrategyPhase = async (rawText: string, attachments: Attachment[
   if (isPureResearch) {
       userPromptText = `MISSION OBJECTIVE / RESEARCH TOPIC: ${instructions}`;
   } else {
-      userPromptText = `RAW INTEL: ${rawText.substring(0, 25000)}`;
+      userPromptText = `RAW INTEL: ${rawText.substring(0, 12000)}`;
   }
 
   const contents = [{ role: 'user', parts: constructParts(userPromptText, attachments) }];
@@ -226,19 +369,26 @@ export const runStrategyPhase = async (rawText: string, attachments: Attachment[
 };
 
 // --- HELPER: EXECUTE SINGLE VECTOR ---
-const executeSearchVector = async (query: string, log: LogCallback, useFallback = false): Promise<{ text: string, sources: SourceReference[] }> => {
+const executeSearchVector = async (query: string, log: LogCallback, useFallback = false): Promise<{ text: string, sources: SourceReference[], summary: string, facts: string[] }> => {
     log(`Initializing Search Vector: "${query}"`, 'network');
     const modelSettings = getModelConfig(useFallback, 'fast');
-    
+
     try {
         const res = await generateSafe({
             model: modelSettings.model, 
-            contents: [{ role: 'user', parts: [{ text: `Detailed report on: "${query}". Include list of source URLs used at the end.` }] }],
-            config: { tools: [{ googleSearch: {} }] } 
+            contents: [{ role: 'user', parts: [{ text: `Query: "${query}". Return JSON with: summary (1-2 sentences), facts (5-7 bullet facts), sources (url/title). Keep facts concise.` }] }],
+            config: { 
+              ...CONFIG_EXTRACTION,
+              tools: [{ googleSearch: {} }],
+              responseSchema: SEARCH_VECTOR_SCHEMA
+            } 
         });
 
         const gatheredSources: SourceReference[] = [];
         const rawUrls: string[] = [];
+        const parsed = safeParseJSON(res.text || "{}", { summary: "", facts: [], sources: [] as { url: string; title?: string }[] });
+        const summary = String(parsed.summary || "").trim();
+        const facts = Array.isArray(parsed.facts) ? parsed.facts.filter(Boolean).slice(0, MAX_FACTS_PER_SOURCE) : [];
 
         // 1. Capture Grounding Metadata
         res.candidates?.[0]?.groundingMetadata?.groundingChunks?.forEach((c: any) => {
@@ -253,8 +403,20 @@ const executeSearchVector = async (query: string, log: LogCallback, useFallback 
             }
         });
 
-        // 2. Fallback Text Extraction
-        const textResponse = res.text || "";
+        // 2. Sources from JSON payload
+        (parsed.sources || []).forEach(source => {
+            if (source?.url && isValidSourceUrl(source.url) && !rawUrls.includes(source.url)) {
+                rawUrls.push(source.url);
+                gatheredSources.push({
+                    url: source.url,
+                    title: source.title || formatSourceTitle(source.url),
+                    summary: `Source via query: "${query}"`
+                });
+            }
+        });
+
+        // 3. Fallback Text Extraction
+        const textResponse = formatEvidenceContent(summary, facts);
         const textUrls = extractUrls(textResponse);
         textUrls.forEach(url => {
             if (isValidSourceUrl(url) && !rawUrls.includes(url)) {
@@ -273,11 +435,11 @@ const executeSearchVector = async (query: string, log: LogCallback, useFallback 
             log(`Search Complete (No Direct Links): "${query}"`, 'info');
         }
 
-        return { text: `[QUERY: ${query}]\n${textResponse}`, sources: gatheredSources };
+        return { text: textResponse, sources: gatheredSources, summary, facts };
 
     } catch (e) {
         log(`Vector Failed: "${query}"`, 'info');
-        return { text: "", sources: [] };
+        return { text: "", sources: [], summary: "", facts: [] };
     }
 };
 
@@ -311,6 +473,13 @@ export const runResearchPhase = async (
   };
   const sourceRegistry = new Map<string, SourceRegistryEntry>();
   const citationDirectiveUrl = "https://directive.local/citation-format";
+  type EvidenceRecord = {
+    url: string;
+    title: string;
+    summary: string;
+    facts: string[];
+  };
+  const evidenceStore = new Map<string, EvidenceRecord>();
 
   const buildCitationBlock = (url: string, title: string, content: string) => {
     const safeTitle = title?.trim() || "External Source";
@@ -348,6 +517,28 @@ export const runResearchPhase = async (
       summary: update?.summary || existing?.summary,
       lastError: update?.lastError || existing?.lastError
     });
+  };
+
+  const upsertEvidence = (record: EvidenceRecord) => {
+    if (!record.url || !isValidSourceUrl(record.url)) return;
+    const existing = evidenceStore.get(record.url);
+    const mergedFacts = new Set([...(existing?.facts || []), ...(record.facts || [])]);
+    evidenceStore.set(record.url, {
+      url: record.url,
+      title: record.title || existing?.title || "External Source",
+      summary: record.summary || existing?.summary || "",
+      facts: Array.from(mergedFacts).slice(0, MAX_FACTS_PER_SOURCE)
+    });
+  };
+
+  const buildEvidenceSummary = () => {
+    const records = Array.from(evidenceStore.values()).slice(0, 12);
+    const lines = records.map(record => {
+      const facts = record.facts.slice(0, 3);
+      const factText = facts.length > 0 ? facts.join("; ") : "Key details extracted.";
+      return `- ${record.title}: ${factText}`;
+    });
+    return lines.join("\n");
   };
 
   const upsertSource = (source: SourceReference) => {
@@ -406,6 +597,12 @@ export const runResearchPhase = async (
     await Promise.all(workers);
   };
 
+  const getQueuedUrls = () => {
+    return Array.from(sourceRegistry.values())
+      .filter(entry => entry.status === 'QUEUED')
+      .map(entry => entry.url);
+  };
+
   const harvest = async (urlBatch: string[], queryBatch: string[]) => {
     const uniqueUrls = urlBatch
       .map(url => url.trim())
@@ -432,17 +629,24 @@ export const runResearchPhase = async (
       try {
         const res = await generateSafeAdapter({
           model: modelSettings.model,
-          contents: [{ role: 'user', parts: [{ text: `Analyze ${url}. Extract Title, Summary, Names, Dates, and Key Events. JSON Output.` }] }],
-          config: { ...CONFIG_EXTRACTION, tools: [{ googleSearch: {} }] }
+          contents: [{ role: 'user', parts: [{ text: `Analyse ${url}. Return JSON with title, summary (1-2 sentences), facts (5-8 concise bullets), entities, dates.` }] }],
+          config: { 
+            ...CONFIG_EXTRACTION,
+            tools: [{ googleSearch: {} }],
+            responseSchema: SOURCE_ANALYSIS_SCHEMA
+          }
         });
 
         if (!res.text) throw new Error("Empty response");
 
-        const data = safeParseJSON(res.text || "{}", { title: "", summary: "", content: "" });
+        const data = safeParseJSON(res.text || "{}", { title: "", summary: "", facts: [] as string[] });
         const title = data.title || formatSourceTitle(url);
-        const summary = data.summary || "Analyzed source.";
+        const summary = data.summary || "Analysed source.";
+        const facts = Array.isArray(data.facts) ? data.facts.filter(Boolean).slice(0, MAX_FACTS_PER_SOURCE) : [];
+        const evidenceContent = formatEvidenceContent(summary, facts);
+        upsertEvidence({ url, title, summary, facts });
         markSourceCompleted(url, title, summary);
-        appendCitationBlock(url, title, data.content || JSON.stringify(data));
+        appendCitationBlock(url, title, evidenceContent);
       } catch (e: any) {
         const reason = e.message || "Access Denied / Timeout";
         log(`Failed to access: ${url}`, 'info');
@@ -467,6 +671,7 @@ export const runResearchPhase = async (
           const query = batch[index];
           if (res.text) {
             const queryUrl = `https://search.local/query?q=${encodeURIComponent(query)}`;
+            upsertEvidence({ url: queryUrl, title: `Search Summary: ${query}`, summary: res.summary, facts: res.facts });
             appendCitationBlock(queryUrl, `Search Summary: ${query}`, res.text);
           }
           res.sources.forEach(registerDiscoveredSource);
@@ -480,8 +685,7 @@ export const runResearchPhase = async (
   };
 
   const reviewForGaps = async (): Promise<string[]> => {
-    const currentContext = contextParts.join("\n\n");
-    const contextSnippet = currentContext.length > 12000 ? currentContext.slice(-12000) : currentContext;
+    const evidenceSummary = buildEvidenceSummary();
     const sourcesList = Array.from(gatheredSources.values())
       .map(source => `${source.title || "Source"} (${source.url})`)
       .slice(0, 50)
@@ -490,7 +694,7 @@ export const runResearchPhase = async (
       `USER MISSION: ${mission || "Not provided"}`,
       `ALREADY ASKED QUERIES: ${JSON.stringify(Array.from(visitedQueries))}`,
       `KNOWN SOURCES:\n${sourcesList || "None"}`,
-      `GATHERED CONTEXT (TRIMMED):\n${contextSnippet || "None"}`,
+      `EVIDENCE SUMMARY:\n${evidenceSummary || "None"}`,
       "CITATION FORMAT IS MANDATORY: [[SOURCE_ID: <url>]] [[TITLE: <title>]] <extracted_content> [[END_SOURCE]].",
       "TASK: Review the information gathered so far against the User's Mission. Are there critical gaps? If yes, what specific questions do we need to ask next?",
       "Return JSON in the schema: {\"queries\": [\"...\"]}.",
@@ -516,6 +720,10 @@ export const runResearchPhase = async (
 
   const runLoop = async (urlBatch: string[], queryBatch: string[], depth: number) => {
     await harvest(urlBatch, queryBatch);
+    const queuedUrls = getQueuedUrls();
+    if (queuedUrls.length > 0) {
+      await harvest(queuedUrls, []);
+    }
 
     if (depth >= MAX_RESEARCH_DEPTH) return;
 
@@ -546,7 +754,8 @@ export const runResearchPhase = async (
 // --- PHASE 3: STRUCTURE ---
 export const runStructurePhase = async (context: string, attachments: Attachment[], instructions: string, log: LogCallback, useFallback = false): Promise<ReportStructure> => {
   const instructionWithUser = STRUCTURE_AGENT_INSTRUCTION.replace('${userInstructions}', instructions);
-  const contents = [{ role: 'user', parts: constructParts(`CONTEXT:\n${context.substring(0, 30000)}`, attachments) }];
+  const structureContext = buildStructureContext(context) || context.substring(0, 8000);
+  const contents = [{ role: 'user', parts: constructParts(`CONTEXT:\n${structureContext.substring(0, 12000)}`, attachments) }];
   const modelSettings = getModelConfig(useFallback, 'quality');
 
   try {
@@ -583,6 +792,9 @@ export const runDraftingPhase = async (
   const results: ReportSection[] = [];
   const modelSettings = getModelConfig(useFallback, 'quality');
   const generateSafeAdapter = adapters?.generateSafe ?? generateSafe;
+  const parsedContext = parseContextSegments(context);
+  const evidenceBlocks = extractCitationBlocks(parsedContext.research || context);
+  const rawSnippet = parsedContext.raw ? parsedContext.raw.slice(0, 2000) : "";
   const editorInstruction = `
 ROLE: Senior Intelligence Editor.
 TASK: Audit the draft against doctrine and evidence.
@@ -590,7 +802,7 @@ CHECKS REQUIRED:
 1) Missing citations for factual claims (use [Source X] where applicable).
 2) Subjective or speculative language.
 3) Logical gaps or unsupported assertions.
-OUTPUT: Provide a verdict and corrective feedback.
+OUTPUT: Provide a verdict and corrective feedback focused on claims and citations.
 `;
 
   const REVIEW_VERDICT_SCHEMA = {
@@ -609,11 +821,46 @@ OUTPUT: Provide a verdict and corrective feedback.
     return content;
   };
 
-  const buildDraftPrompt = (sectionPlan: ReportStructureItem, draft?: string, feedback?: string) => {
+  const getKeywords = (text: string) => {
+    return text
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(word => word.length > 3);
+  };
+
+  const selectEvidenceBlocks = (sectionPlan: ReportStructureItem) => {
+    if (evidenceBlocks.length === 0) return [];
+    const keywords = new Set([...getKeywords(sectionPlan.title), ...getKeywords(sectionPlan.guidance)]);
+    const scored = evidenceBlocks.map(block => {
+      const haystack = `${block.title} ${block.content}`.toLowerCase();
+      let score = 0;
+      keywords.forEach(word => {
+        if (haystack.includes(word)) score += 1;
+      });
+      return { block, score };
+    });
+    const sorted = scored.sort((a, b) => b.score - a.score);
+    const selected = sorted.filter(item => item.score > 0).map(item => item.block);
+    const fallback = selected.length > 0 ? selected : sorted.map(item => item.block);
+    return fallback.slice(0, MAX_EVIDENCE_SOURCES);
+  };
+
+  const buildEvidencePack = (sectionPlan: ReportStructureItem) => {
+    const selected = selectEvidenceBlocks(sectionPlan);
+    if (selected.length === 0) {
+      return rawSnippet ? `RAW SNIPPET:\n${rawSnippet}` : "";
+    }
+    const manifest = selected.map((block, index) => `[Source ${index + 1}] ${block.title} (${block.url})`);
+    const evidenceText = selected.map(block => block.block).join("\n\n");
+    return `SOURCE MANIFEST:\n${manifest.join("\n")}\n\nEVIDENCE:\n${evidenceText}`;
+  };
+
+  const buildDraftPrompt = (sectionPlan: ReportStructureItem, evidencePack: string, draft?: string, feedback?: string) => {
     const basePrompt = [
       `SECTION: ${sectionPlan.title}`,
       `GUIDANCE: ${sectionPlan.guidance}`,
-      `CONTEXT: ${context.substring(0, 30000)}`
+      evidencePack ? `EVIDENCE PACK:\n${evidencePack}` : "EVIDENCE PACK: None",
+      "OUTPUT: Provide content plus a short claims list with citations (3-6 items)."
     ];
 
     if (draft && feedback) {
@@ -627,8 +874,19 @@ OUTPUT: Provide a verdict and corrective feedback.
     return basePrompt.join("\n");
   };
 
-  const generateSectionDraft = async (sectionPlan: ReportStructureItem, draft?: string, feedback?: string): Promise<string | string[]> => {
-    const parts = constructParts(buildDraftPrompt(sectionPlan, draft, feedback), attachments);
+  type DraftPayload = { content: string | string[]; claims: string[] };
+
+  const normaliseClaims = (claims: string[]) => {
+    return claims.map(c => c.trim()).filter(Boolean).slice(0, 8);
+  };
+
+  const generateSectionDraft = async (
+    sectionPlan: ReportStructureItem,
+    evidencePack: string,
+    draft?: string,
+    feedback?: string
+  ): Promise<DraftPayload> => {
+    const parts = constructParts(buildDraftPrompt(sectionPlan, evidencePack, draft, feedback), attachments);
 
     const res = await generateSafeAdapter({
       model: modelSettings.model,
@@ -636,21 +894,22 @@ OUTPUT: Provide a verdict and corrective feedback.
       config: {
         ...modelSettings.config,
         systemInstruction: baseInstruction,
-        responseSchema: SECTION_CONTENT_SCHEMA,
+        responseSchema: SECTION_DRAFT_SCHEMA,
       }
     });
 
-    const contentData = safeParseJSON(res.text || "{}", { content: "Data insufficient." });
-    return contentData.content;
+    const contentData = safeParseJSON(res.text || "{}", { content: "Data insufficient.", claims: [] as string[] });
+    return {
+      content: contentData.content,
+      claims: normaliseClaims(contentData.claims || [])
+    };
   };
 
-  const reviewDraft = async (sectionPlan: ReportStructureItem, draft: string) => {
-    const contextSnippet = context.length > 12000 ? context.slice(-12000) : context;
+  const reviewDraft = async (sectionPlan: ReportStructureItem, claims: string[], evidencePack: string) => {
     const prompt = [
       `SECTION: ${sectionPlan.title}`,
-      `DRAFT:\n${draft}`,
-      `SOURCE CONTEXT (TRIMMED):\n${contextSnippet}`,
-      `INSTRUCTIONS: ${instructions}`,
+      `CLAIMS:\n${claims.join("\n") || "None"}`,
+      evidencePack ? `EVIDENCE PACK:\n${evidencePack}` : "EVIDENCE PACK: None",
       "Provide verdict and feedback. Use JSON schema."
     ].join("\n\n");
 
@@ -675,27 +934,33 @@ OUTPUT: Provide a verdict and corrective feedback.
 
   for (let i = 0; i < structure.sections.length; i += BATCH_SIZE) {
       const batch = structure.sections.slice(i, i + BATCH_SIZE);
-      const batchPromises = batch.map(async (sectionPlan) => {
-         log(`Drafting Component: ${sectionPlan.title}`, 'ai');
-         try {
-             let currentContent = await generateSectionDraft(sectionPlan);
-             for (let attempt = 0; attempt <= MAX_REVISIONS; attempt++) {
-               const review = await reviewDraft(sectionPlan, normaliseDraftContent(currentContent));
-               if (!review || review.verdict === "Approved") {
-                 if (review?.verdict === "Approved") {
-                   log(`Editor approved: ${sectionPlan.title}`, 'success');
-                 }
-                 break;
-               }
-               log(`Revision requested: ${sectionPlan.title}`, 'planning');
-               if (attempt === MAX_REVISIONS) break;
-               currentContent = await generateSectionDraft(sectionPlan, normaliseDraftContent(currentContent), review.feedback);
-             }
+       const batchPromises = batch.map(async (sectionPlan) => {
+          log(`Drafting Component: ${sectionPlan.title}`, 'ai');
+          try {
+              const evidencePack = buildEvidencePack(sectionPlan);
+              let currentDraft = await generateSectionDraft(sectionPlan, evidencePack);
+              for (let attempt = 0; attempt <= MAX_REVISIONS; attempt++) {
+                const review = await reviewDraft(sectionPlan, currentDraft.claims, evidencePack);
+                if (!review || review.verdict === "Approved") {
+                  if (review?.verdict === "Approved") {
+                    log(`Editor approved: ${sectionPlan.title}`, 'success');
+                  }
+                  break;
+                }
+                log(`Revision requested: ${sectionPlan.title}`, 'planning');
+                if (attempt === MAX_REVISIONS) break;
+                currentDraft = await generateSectionDraft(
+                  sectionPlan,
+                  evidencePack,
+                  normaliseDraftContent(currentDraft.content),
+                  review.feedback
+                );
+              }
 
-             return {
+              return {
                title: sectionPlan.title,
                type: sectionPlan.type,
-               content: currentContent
+               content: currentDraft.content
              } as ReportSection;
 
          } catch (e: any) {
@@ -757,7 +1022,7 @@ export const generateMoreQueries = async (rawText: string, currentQueries: strin
       const prompt = `
         ROLE: Senior Intelligence Planner.
         TASK: Generate 3-5 NEW, DISTINCT search queries to expand the research strategy.
-        CONTEXT: ${rawText.substring(0, 5000)}
+        CONTEXT: ${rawText.substring(0, 2000)}
         CURRENT STRATEGY: ${JSON.stringify(currentQueries)}
         USER DIRECTION: ${instructions}
         CONSTRAINT: Do not duplicate existing queries. Focus on gaps.
@@ -779,7 +1044,7 @@ export const analyzeResearchCoverage = async (currentContext: string, originalGa
   try {
       const response = await generateSafe({
         model: MODEL_QUALITY,
-        contents: [{ role: 'user', parts: [{ text: `Gaps: ${JSON.stringify(originalGaps)}. Context: ${currentContext.substring(0, 10000)}. Generate queries if needed.` }] }],
+        contents: [{ role: 'user', parts: [{ text: `Gaps: ${JSON.stringify(originalGaps)}. Context: ${currentContext.substring(0, 6000)}. Generate queries if needed.` }] }],
         config: {
           ...CONFIG_REASONING,
           systemInstruction: GAP_ANALYSIS_INSTRUCTION,
@@ -794,7 +1059,7 @@ export const identifyStructuralGaps = async (structure: ReportStructure, current
   try {
       const response = await generateSafe({
         model: MODEL_QUALITY,
-        contents: [{ role: 'user', parts: [{ text: `Structure: ${JSON.stringify(structure)}. Context: ${currentContext.substring(0, 10000)}. Missing info?` }] }],
+        contents: [{ role: 'user', parts: [{ text: `Structure: ${JSON.stringify(structure)}. Context: ${currentContext.substring(0, 6000)}. Missing info?` }] }],
         config: {
           ...CONFIG_REASONING,
           systemInstruction: STRUCTURAL_COVERAGE_INSTRUCTION,
@@ -937,7 +1202,7 @@ export const conductDeepResearch = async (topic: string, fullContext: string): P
     try {
         const response = await generateSafe({
           model: MODEL_QUALITY,
-          contents: [{ role: 'user', parts: [{ text: `Deep research on "${topic}". Context: ${fullContext.substring(0, 10000)}` }] }],
+          contents: [{ role: 'user', parts: [{ text: `Deep research on "${topic}". Context: ${fullContext.substring(0, 6000)}` }] }],
           config: {
             tools: [{ googleSearch: {} }],
             responseMimeType: "application/json",

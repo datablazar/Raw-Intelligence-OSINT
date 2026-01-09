@@ -6,7 +6,7 @@ import type { GeminiTestAdapters } from "../services/geminiService";
 const noopLog = () => {};
 
 const getAnalyzeUrl = (text: string) => {
-  const match = text.match(/Analyze\s+(.*?)\.\s+Extract/i);
+  const match = text.match(/Analyse\s+(.*?)\.\s+Return/i);
   return match ? match[1] : "";
 };
 
@@ -14,13 +14,13 @@ describe("runResearchPhase", () => {
   it("builds citation blocks and dedupes sources", async () => {
     const generateSafe = async (params: any) => {
       const text = params?.contents?.[0]?.parts?.[0]?.text || "";
-      if (text.startsWith("Analyze ")) {
+      if (text.startsWith("Analyse ")) {
         const url = getAnalyzeUrl(text);
         return {
           text: JSON.stringify({
             title: `Title for ${url}`,
             summary: `Summary for ${url}`,
-            content: `Content for ${url}`
+            facts: [`Fact for ${url}`]
           })
         };
       }
@@ -33,6 +33,8 @@ describe("runResearchPhase", () => {
     const executeSearchVector = async (query: string) => {
       return {
         text: `Summary for ${query}`,
+        summary: `Summary for ${query}`,
+        facts: [`Fact for ${query}`],
         sources: [
           {
             url: `https://source.local/${query}`,
@@ -77,7 +79,7 @@ describe("runResearchPhase", () => {
 
     const generateSafe = async (params: any) => {
       const text = params?.contents?.[0]?.parts?.[0]?.text || "";
-      if (text.startsWith("Analyze ")) {
+      if (text.startsWith("Analyse ")) {
         active += 1;
         if (active > maxActive) maxActive = active;
         await new Promise(resolve => setTimeout(resolve, 5));
@@ -87,7 +89,7 @@ describe("runResearchPhase", () => {
           text: JSON.stringify({
             title: `Title for ${url}`,
             summary: `Summary for ${url}`,
-            content: `Content for ${url}`
+            facts: [`Fact for ${url}`]
           })
         };
       }
@@ -99,7 +101,7 @@ describe("runResearchPhase", () => {
 
     const adapters: GeminiTestAdapters = {
       generateSafe,
-      executeSearchVector: async () => ({ text: "", sources: [] })
+      executeSearchVector: async () => ({ text: "", sources: [], summary: "", facts: [] })
     };
 
     await runResearchPhase(urls, [], noopLog, true, "mission", adapters);
@@ -131,9 +133,9 @@ describe("runDraftingPhase", () => {
       if (system.includes("Intelligence Desk Officer")) {
         writerCalls += 1;
         if (text.includes("REVISION TASK")) {
-          return { text: JSON.stringify({ content: "Revised draft [Source 1]" }) };
+          return { text: JSON.stringify({ content: "Revised draft [Source 1]", claims: ["Claim [Source 1]"] }) };
         }
-        return { text: JSON.stringify({ content: "Draft without citation." }) };
+        return { text: JSON.stringify({ content: "Draft without citation.", claims: ["Claim without citation"] }) };
       }
       return { text: JSON.stringify({}) };
     };
@@ -159,7 +161,7 @@ describe("runDraftingPhase", () => {
         throw new Error("timeout");
       }
       if (system.includes("Intelligence Desk Officer")) {
-        return { text: JSON.stringify({ content: "Draft ok." }) };
+        return { text: JSON.stringify({ content: "Draft ok.", claims: ["Claim [Source 1]"] }) };
       }
       return { text: JSON.stringify({}) };
     };
