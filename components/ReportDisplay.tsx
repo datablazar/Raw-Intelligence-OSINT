@@ -163,7 +163,7 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
             text: `${secIdx + 1}.0  ${s.title.toUpperCase()}`,
             heading: HeadingLevel.HEADING_2,
             spacing: { before: 400, after: 200 },
-            border: { bottom: { color: "CCCCCC", space: 4, value: BorderStyle.SINGLE, size: 4 } }
+            border: { bottom: { color: "CCCCCC", space: 4, style: BorderStyle.SINGLE, size: 4 } }
         });
 
         const contentLines = Array.isArray(s.content) ? s.content : s.content.split('\n');
@@ -262,9 +262,9 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
                   new TextRun({ text: "  |  ", size: 16, font: "Calibri" }),
                   new TextRun({ text: `${report.classification}`, bold: true, color: "FF0000", size: 16, font: "Calibri" })
               ],
-              border: { bottom: { color: "000000", space: 12, value: BorderStyle.SINGLE, size: 6 } },
-              spacing: { after: 400 }
-            }),
+            border: { bottom: { color: "000000", space: 12, style: BorderStyle.SINGLE, size: 6 } },
+            spacing: { after: 400 }
+          }),
 
             // Executive Summary
             new Paragraph({
@@ -274,7 +274,7 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
             }),
             new Paragraph({
                 children: [ new TextRun({ text: report.executiveSummary, italics: true, font: "Calibri", size: 22 }) ],
-                border: { left: { color: "1d4ed8", space: 12, value: BorderStyle.SINGLE, size: 24 } },
+                border: { left: { color: "1d4ed8", space: 12, style: BorderStyle.SINGLE, size: 24 } },
                 indent: { left: 240 },
                 spacing: { after: 400 },
                 alignment: AlignmentType.JUSTIFIED
