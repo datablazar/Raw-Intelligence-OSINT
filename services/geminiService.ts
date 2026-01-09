@@ -277,70 +277,148 @@ const executeSearchVector = async (query: string, log: LogCallback, useFallback 
 };
 
 // --- PHASE 2: RESEARCH ---
-export const runResearchPhase = async (urls: string[], queries: string[], log: LogCallback, useFallback = false): Promise<DeepResearchResult> => {
+export const runResearchPhase = async (
+  urls: string[],
+  queries: string[],
+  log: LogCallback,
+  useFallback = false,
+  mission = ""
+): Promise<DeepResearchResult> => {
+  const MAX_RESEARCH_DEPTH = 4;
   const contextParts: string[] = [];
   const gatheredSources: Map<string, SourceReference> = new Map();
   const failedUrls: FailedSource[] = [];
+  const visitedQueries = new Set<string>();
+  const visitedUrls = new Set<string>();
   const modelSettings = getModelConfig(useFallback, 'fast');
 
-  // A. URL Deep Read
-  if (urls.length > 0) {
-    const urlTasks = urls.map(async (url) => {
-      log(`Interrogating Direct Source: ${url}`, 'network');
-      try {
-        const res = await generateSafe({
-          model: modelSettings.model, 
-          contents: [{ role: 'user', parts: [{ text: `Analyze ${url}. Extract Title, Summary, Names, Dates, and Key Events. JSON Output.` }] }],
-          config: { ...CONFIG_EXTRACTION, tools: [{ googleSearch: {} }] }
-        });
-        
-        if (!res.text) throw new Error("Empty response");
+  const addSource = (source: SourceReference) => {
+    if (!source.url || !isValidSourceUrl(source.url)) return;
+    gatheredSources.set(source.url, source);
+  };
 
-        const data = safeParseJSON(res.text || "{}", { title: "", summary: "", content: "" });
-        const title = data.title || formatSourceTitle(url);
-        
-        if (isValidSourceUrl(url)) {
-            gatheredSources.set(url, { url, title, summary: data.summary || "Analyzed source." });
+  const addFailedUrl = (url: string, reason: string, isHighValue: boolean) => {
+    if (!url) return;
+    if (failedUrls.find(f => f.url === url)) return;
+    failedUrls.push({ url, reason, isHighValue });
+  };
+
+  const harvest = async (urlBatch: string[], queryBatch: string[]) => {
+    const uniqueUrls = urlBatch.filter(url => url && !visitedUrls.has(url));
+    uniqueUrls.forEach(url => visitedUrls.add(url));
+
+    if (uniqueUrls.length > 0) {
+      const urlTasks = uniqueUrls.map(async (url) => {
+        log(`Interrogating Direct Source: ${url}`, 'network');
+        try {
+          const res = await generateSafe({
+            model: modelSettings.model, 
+            contents: [{ role: 'user', parts: [{ text: `Analyze ${url}. Extract Title, Summary, Names, Dates, and Key Events. JSON Output.` }] }],
+            config: { ...CONFIG_EXTRACTION, tools: [{ googleSearch: {} }] }
+          });
+          
+          if (!res.text) throw new Error("Empty response");
+
+          const data = safeParseJSON(res.text || "{}", { title: "", summary: "", content: "" });
+          const title = data.title || formatSourceTitle(url);
+          
+          addSource({ url, title, summary: data.summary || "Analyzed source." });
+          return `[SOURCE: ${title}]\n${data.content || JSON.stringify(data)}`;
+        } catch (e: any) {
+          log(`Failed to access: ${url}`, 'info');
+          addFailedUrl(url, e.message || "Access Denied / Timeout", true);
+          return `[SOURCE ERROR: ${url}]`;
         }
-        return `[SOURCE: ${title}]\n${data.content || JSON.stringify(data)}`;
-      } catch (e: any) {
-        log(`Failed to access: ${url}`, 'info');
-        failedUrls.push({
-            url: url,
-            reason: e.message || "Access Denied / Timeout",
-            isHighValue: true
-        });
-        return `[SOURCE ERROR: ${url}]`;
-      }
-    });
-    
-    // Run URL tasks
-    const urlResults = await Promise.all(urlTasks);
-    contextParts.push(...urlResults);
-  }
+      });
+      
+      const urlResults = await Promise.all(urlTasks);
+      contextParts.push(...urlResults);
+    }
 
-  // B. Google Search Grid
-  if (queries.length > 0) {
-    const batchSize = 3; 
-    for (let i = 0; i < queries.length; i += batchSize) {
-        const batch = queries.slice(i, i + batchSize);
+    const filteredQueries = queryBatch
+      .map(q => q.trim())
+      .filter(q => q && !visitedQueries.has(q));
+
+    filteredQueries.forEach(q => visitedQueries.add(q));
+
+    if (filteredQueries.length > 0) {
+      const batchSize = 3; 
+      for (let i = 0; i < filteredQueries.length; i += batchSize) {
+        const batch = filteredQueries.slice(i, i + batchSize);
         const batchResults = await Promise.all(batch.map(q => executeSearchVector(q, log, useFallback)));
         
         batchResults.forEach(res => {
-            if (res.text) contextParts.push(res.text);
-            res.sources.forEach(s => gatheredSources.set(s.url, s));
+          if (res.text) contextParts.push(res.text);
+          res.sources.forEach(addSource);
         });
         
-        if (i + batchSize < queries.length) {
-            await new Promise(r => setTimeout(r, 1000));
+        if (i + batchSize < filteredQueries.length) {
+          await new Promise(r => setTimeout(r, 1000));
         }
+      }
     }
-  }
+  };
+
+  const reviewForGaps = async (): Promise<string[]> => {
+    const currentContext = contextParts.join("\n\n");
+    const contextSnippet = currentContext.length > 12000 ? currentContext.slice(-12000) : currentContext;
+    const sourcesList = Array.from(gatheredSources.values())
+      .map(source => `${source.title || "Source"} (${source.url})`)
+      .slice(0, 50)
+      .join("\n");
+    const prompt = [
+      `USER MISSION: ${mission || "Not provided"}`,
+      `ALREADY ASKED QUERIES: ${JSON.stringify(Array.from(visitedQueries))}`,
+      `KNOWN SOURCES:\n${sourcesList || "None"}`,
+      `GATHERED CONTEXT (TRIMMED):\n${contextSnippet || "None"}`,
+      "TASK: Review the information gathered so far against the User's Mission. Are there critical gaps? If yes, what specific questions do we need to ask next?",
+      "Return JSON in the schema: {\"queries\": [\"...\"]}.",
+      "If no gaps, return {\"queries\": []}.",
+      "Do not repeat prior queries or ask for information already covered."
+    ].join("\n\n");
+
+    try {
+      const response = await generateSafe({
+        model: MODEL_QUALITY,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: {
+          ...CONFIG_REASONING,
+          responseSchema: QUERIES_SCHEMA,
+        }
+      });
+      return safeParseJSON<{queries: string[]}>(response.text || "{}", { queries: [] }).queries;
+    } catch (e) {
+      log("Gap review failed. Continuing with gathered intelligence.", 'info');
+      return [];
+    }
+  };
+
+  const runLoop = async (urlBatch: string[], queryBatch: string[], depth: number) => {
+    await harvest(urlBatch, queryBatch);
+
+    if (depth >= MAX_RESEARCH_DEPTH) return;
+
+    log("Reviewing gathered intelligence for gaps...", 'ai');
+    const newQueries = await reviewForGaps();
+    const filteredNewQueries = newQueries
+      .map(q => q.trim())
+      .filter(q => q && !visitedQueries.has(q));
+
+    if (filteredNewQueries.length === 0) {
+      log("Gap review indicates coverage is sufficient.", 'success');
+      return;
+    }
+
+    log(`Gaps detected. Launching ${filteredNewQueries.length} follow-up vectors...`, 'planning');
+    await runLoop([], filteredNewQueries, depth + 1);
+  };
+
+  await runLoop(urls, queries, 0);
 
   return { 
-      context: contextParts.join("\n\n"), 
-      sources: Array.from(gatheredSources.values()),
-      failedUrls: failedUrls
+    context: contextParts.join("\n\n"), 
+    sources: Array.from(gatheredSources.values()),
+    failedUrls: failedUrls
   };
 };
 
@@ -513,8 +591,8 @@ export const identifyStructuralGaps = async (structure: ReportStructure, current
   } catch { return []; }
 };
 
-export const conductTacticalResearch = async (queries: string[], log: LogCallback): Promise<DeepResearchResult> => {
-    return runResearchPhase([], queries, log, true); // Tactical always uses safe/fast mode (fallback enabled mostly)
+export const conductTacticalResearch = async (queries: string[], log: LogCallback, mission = ""): Promise<DeepResearchResult> => {
+    return runResearchPhase([], queries, log, true, mission); // Tactical always uses safe/fast mode (fallback enabled mostly)
 };
 
 // --- CHAT TOOLS ---

@@ -166,7 +166,8 @@ const MissionWizard: React.FC<MissionWizardProps> = ({ config, onComplete, onCan
         addLog(`Deploying Global Crawler Swarm... ${useFallbackModel ? '[FALLBACK MODE]' : ''}`, 'network');
         try {
           const urlsToScan = plan!.foundUrls || [];
-          const initialResult = await runResearchPhase(urlsToScan, plan!.searchQueries || [], addLog, useFallbackModel);
+          const missionContext = [config.instructions, config.rawText].filter(Boolean).join("\n");
+          const initialResult = await runResearchPhase(urlsToScan, plan!.searchQueries || [], addLog, useFallbackModel, missionContext);
           
           if (initialResult.failedUrls && initialResult.failedUrls.length > 0) {
               setFailedSources(initialResult.failedUrls);
@@ -179,7 +180,7 @@ const MissionWizard: React.FC<MissionWizardProps> = ({ config, onComplete, onCan
 
           if (gapQueries.length > 0) {
               addLog(`Coverage gaps detected. Deploying ${gapQueries.length} tactical agents...`, 'network');
-              const tacticalResult = await conductTacticalResearch(gapQueries, addLog); // Tactical auto-uses fallback/fast usually
+              const tacticalResult = await conductTacticalResearch(gapQueries, addLog, config.instructions); // Tactical auto-uses fallback/fast usually
               finalContext += "\n\n" + tacticalResult.context;
               finalSources = [...finalSources, ...tacticalResult.sources.filter(s => !finalSources.find(fs => fs.url === s.url))];
           }
@@ -225,7 +226,7 @@ const MissionWizard: React.FC<MissionWizardProps> = ({ config, onComplete, onCan
     const missingQueries = await identifyStructuralGaps(editableStructure, researchData.context);
     if (missingQueries.length > 0) {
         addLog(`Gap detected. Filling void with ${missingQueries.length} queries...`, 'network');
-        const tacticalResult = await conductTacticalResearch(missingQueries, addLog);
+        const tacticalResult = await conductTacticalResearch(missingQueries, addLog, config.instructions);
         setResearchData(prev => prev ? ({ ...prev, context: prev.context + tacticalResult.context }) : null);
     }
     setStep('drafting');
