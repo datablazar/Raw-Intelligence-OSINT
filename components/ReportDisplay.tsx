@@ -5,8 +5,6 @@ import { Printer, Download, Clock, ChevronDown, MessageSquareText, Globe, Pencil
 import { createReportChatSession, verifyClaim, VerificationResult, conductDeepResearch } from '../services/geminiService';
 import ChatInterface from './ChatInterface';
 import { Chat } from '@google/genai';
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, BorderStyle, LevelFormat, WidthType } from "docx";
-import FileSaver from "file-saver";
 
 interface ReportDisplayProps {
   report: IntelligenceReport | null;
@@ -86,32 +84,6 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
     });
   };
 
-  /**
-   * Helper to parse a string into DOCX TextRuns
-   */
-  const parseMarkdownToDocx = (text: string): TextRun[] => {
-    if (!text) return [];
-    const parts = text.split(MARKDOWN_REGEX).filter(p => p);
-
-    return parts.map(part => {
-        if (!part) return new TextRun("");
-        
-        if (part.startsWith('***') && part.endsWith('***')) {
-            return new TextRun({ text: part.slice(3, -3), bold: true, italics: true, font: "Calibri", size: 22 });
-        }
-        if (part.startsWith('**') && part.endsWith('**')) {
-            return new TextRun({ text: part.slice(2, -2), bold: true, font: "Calibri", size: 22 });
-        }
-        if (part.startsWith('*') && part.endsWith('*')) {
-            return new TextRun({ text: part.slice(1, -1), italics: true, font: "Calibri", size: 22 });
-        }
-        if (part.match(/^\[Source \d+\]$/)) {
-            return new TextRun({ text: part, size: 14, color: "1d4ed8", superScript: true, font: "Calibri" });
-        }
-        return new TextRun({ text: part, font: "Calibri", size: 22 });
-    });
-  };
-
   const getIndentLevel = (text: string) => {
       const spaces = text.match(/^\s*/)?.[0].length || 0;
       return Math.floor(spaces / 2); // 2 spaces = 1 indent level
@@ -157,6 +129,34 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
     if (!report) return;
 
     try {
+      const docx = await import("docx");
+      const fileSaverModule = await import("file-saver");
+      const FileSaver = (fileSaverModule as any).default ?? fileSaverModule;
+      const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, BorderStyle, LevelFormat } = docx;
+
+      const parseMarkdownToDocx = (text: string) => {
+        if (!text) return [];
+        const parts = text.split(MARKDOWN_REGEX).filter(p => p);
+
+        return parts.map(part => {
+            if (!part) return new TextRun("");
+            
+            if (part.startsWith('***') && part.endsWith('***')) {
+                return new TextRun({ text: part.slice(3, -3), bold: true, italics: true, font: "Calibri", size: 22 });
+            }
+            if (part.startsWith('**') && part.endsWith('**')) {
+                return new TextRun({ text: part.slice(2, -2), bold: true, font: "Calibri", size: 22 });
+            }
+            if (part.startsWith('*') && part.endsWith('*')) {
+                return new TextRun({ text: part.slice(1, -1), italics: true, font: "Calibri", size: 22 });
+            }
+            if (part.match(/^\[Source \d+\]$/)) {
+                return new TextRun({ text: part, size: 14, color: "1d4ed8", superScript: true, font: "Calibri" });
+            }
+            return new TextRun({ text: part, font: "Calibri", size: 22 });
+        });
+      };
+
       // Prepare sections
       const docxSections = report.sections.flatMap((s, secIdx) => {
         const sectionHeader = new Paragraph({

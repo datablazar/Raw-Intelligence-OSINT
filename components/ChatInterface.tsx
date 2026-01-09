@@ -4,7 +4,14 @@ import { Send, Paperclip, X, FileImage, Sparkles, Globe, BrainCircuit, FileText 
 import { Chat } from "@google/genai";
 import { Attachment, ChatMessage, IntelligenceReport } from '../types';
 import { sendChatMessage, performSearchQuery } from '../services/geminiService';
-import mammoth from 'mammoth';
+const loadMammoth = (() => {
+  let cached: Promise<any> | null = null;
+  return async () => {
+    if (!cached) cached = import('mammoth');
+    const mod = await cached;
+    return mod.default ?? mod;
+  };
+})();
 
 interface ChatInterfaceProps {
   chatSession: Chat | null;
@@ -63,6 +70,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ chatSession, report, onUp
             try {
                 type = 'text';
                 const arrayBuffer = await file.arrayBuffer();
+                const mammoth = await loadMammoth();
                 const result = await mammoth.extractRawText({ arrayBuffer });
                 textContent = result.value;
             } catch (e) {

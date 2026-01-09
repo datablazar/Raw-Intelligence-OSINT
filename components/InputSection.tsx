@@ -2,7 +2,14 @@
 import React, { useState, useRef } from 'react';
 import { Trash2, Upload, FileAudio, FileVideo, FileImage, X, Shield, Paperclip, Clipboard, Play, FileText } from 'lucide-react';
 import { Attachment } from '../types';
-import mammoth from 'mammoth';
+const loadMammoth = (() => {
+  let cached: Promise<any> | null = null;
+  return async () => {
+    if (!cached) cached = import('mammoth');
+    const mod = await cached;
+    return mod.default ?? mod;
+  };
+})();
 
 interface InputSectionProps {
   onGenerate: (text: string, attachments: Attachment[], instructions: string) => void;
@@ -46,6 +53,7 @@ const InputSection: React.FC<InputSectionProps> = ({ onGenerate, isProcessing, v
           try {
               type = 'text';
               const arrayBuffer = await file.arrayBuffer();
+              const mammoth = await loadMammoth();
               const result = await mammoth.extractRawText({ arrayBuffer });
               textContent = result.value;
           } catch (e) {

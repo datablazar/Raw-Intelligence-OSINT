@@ -3,7 +3,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import { MissionConfig, IntelligenceReport, ResearchPlan, Entity, SourceReference, ReportStructure, ReportSection, ProcessingLog, FailedSource, Attachment } from '../types';
 import { runStrategyPhase, runResearchPhase, runStructurePhase, runDraftingPhase, runFinalizePhase, extractUrls, generateMoreQueries, analyzeResearchCoverage, identifyStructuralGaps, conductTacticalResearch } from '../services/geminiService';
 import { BrainCircuit, Globe, FileText, Activity, Terminal, ArrowRight, Shield, Target, Lock, Wifi, Cpu, Layers, X, ChevronRight, ChevronDown, ExternalLink, Plus, Link, Link2, AlertTriangle, Upload, RefreshCw, Paperclip, AlertOctagon } from 'lucide-react';
-import mammoth from 'mammoth';
+const loadMammoth = (() => {
+  let cached: Promise<any> | null = null;
+  return async () => {
+    if (!cached) cached = import('mammoth');
+    const mod = await cached;
+    return mod.default ?? mod;
+  };
+})();
 
 interface MissionWizardProps {
   config: MissionConfig;
@@ -321,6 +328,7 @@ const MissionWizard: React.FC<MissionWizardProps> = ({ config, onComplete, onCan
               let text = "";
               if (file.name.endsWith('.docx')) {
                   const arrayBuffer = await file.arrayBuffer();
+                  const mammoth = await loadMammoth();
                   const result = await mammoth.extractRawText({ arrayBuffer });
                   text = result.value;
               } else { text = await file.text(); }
