@@ -490,9 +490,9 @@ export const runResearchPhase = async (
   mission = "",
   adapters?: GeminiTestAdapters
 ): Promise<DeepResearchResult> => {
-  const MAX_RESEARCH_DEPTH = 3;
-  const MAX_URL_CONCURRENCY = 5;
-  const URL_REQUEST_DELAY_MS = 750;
+  const MAX_RESEARCH_DEPTH = 2;
+  const MAX_URL_CONCURRENCY = 10
+  const URL_REQUEST_DELAY_MS = 250
   const contextParts: string[] = [];
   const gatheredSources: Map<string, SourceReference> = new Map();
   const failedUrls: FailedSource[] = [];
