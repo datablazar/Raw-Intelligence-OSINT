@@ -1,16 +1,10 @@
 
 export enum ConfidenceLevel {
-  LOW = "Low Probability",
-  MODERATE = "Moderate Probability",
-  HIGH = "High Probability",
-  NEAR_CERTAINTY = "Near Certainty"
+  NOT_ASSESSED = "Not Assessed"
 }
 
 export enum Classification {
-  OFFICIAL = "OFFICIAL",
-  OFFICIAL_SENSITIVE = "OFFICIAL-SENSITIVE",
-  SECRET = "SECRET",
-  TOP_SECRET = "TOP SECRET"
+  PUBLIC = "PUBLIC"
 }
 
 export interface ReportSection {
@@ -39,7 +33,7 @@ export interface FailedSource {
   isHighValue: boolean;
 }
 
-export interface IntelligenceReport {
+export interface AnalysisReport {
   classification: Classification;
   handlingInstructions: string;
   reportTitle: string;
@@ -73,7 +67,7 @@ export interface ProcessingState {
 export interface HistoryItem {
   id: string;
   timestamp: number;
-  report: IntelligenceReport;
+  report: AnalysisReport;
   rawContext: string;
 }
 

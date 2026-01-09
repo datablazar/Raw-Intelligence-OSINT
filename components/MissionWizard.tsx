@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { MissionConfig, IntelligenceReport, ResearchPlan, Entity, SourceReference, ReportStructure, ReportSection, ProcessingLog, FailedSource, Attachment } from '../types';
+import { MissionConfig, AnalysisReport, ResearchPlan, Entity, SourceReference, ReportStructure, ReportSection, ProcessingLog, FailedSource, Attachment } from '../types';
 import { runStrategyPhase, runResearchPhase, runStructurePhase, runDraftingPhase, runFinalizePhase, extractUrls, generateMoreQueries, analyzeResearchCoverage, identifyStructuralGaps, conductTacticalResearch } from '../services/geminiService';
 import { BrainCircuit, Globe, FileText, Activity, Terminal, ArrowRight, Shield, Target, Lock, Wifi, Cpu, Layers, X, ChevronRight, ChevronDown, ExternalLink, Plus, Link, Link2, AlertTriangle, Upload, RefreshCw, Paperclip, AlertOctagon } from 'lucide-react';
 const loadMammoth = (() => {
@@ -14,7 +14,7 @@ const loadMammoth = (() => {
 
 interface MissionWizardProps {
   config: MissionConfig;
-  onComplete: (report: IntelligenceReport) => void;
+  onComplete: (report: AnalysisReport) => void;
   onCancel: () => void;
 }
 
@@ -193,7 +193,7 @@ const MissionWizard: React.FC<MissionWizardProps> = ({ config, onComplete, onCan
           }
           setResearchData({ context: finalContext, sources: finalSources });
           setEditableSources(finalSources);
-          addLog("Intelligence gathering complete.", 'success');
+          addLog("Research gathering complete.", 'success');
           setStep('review_research');
         } catch (e) { handleError(e); }
       };
@@ -228,7 +228,7 @@ const MissionWizard: React.FC<MissionWizardProps> = ({ config, onComplete, onCan
   const handleApproveStructure = async () => {
     if (!editableStructure || !researchData) return;
     setStructure(editableStructure);
-    addLog("Verifying structural integrity against gathered intel...", 'ai');
+    addLog("Verifying structural integrity against gathered data...", 'ai');
     // We don't bubble error here strictly as it's a sub-check
     const missingQueries = await identifyStructuralGaps(editableStructure, researchData.context);
     if (missingQueries.length > 0) {
@@ -250,14 +250,14 @@ const MissionWizard: React.FC<MissionWizardProps> = ({ config, onComplete, onCan
           const fullContext = `INSTRUCTIONS: ${config.instructions}\nRAW: ${config.rawText}\nSOURCES: ${sourceManifest}\nRESEARCH: ${researchData!.context}`;
 
           const sections = await runDraftingPhase(structure!, fullContext, config.attachments, config.instructions, addLog, useFallbackModel);
-          addLog("Finalizing Metadata and Classification...", 'ai');
+          addLog("Finalizing Report Metadata...", 'ai');
           const meta = await runFinalizePhase(sections, plan?.reliabilityAssessment || "Unknown", config.instructions, addLog, useFallbackModel);
           
           onComplete({
             classification: meta.classification,
-            handlingInstructions: meta.handlingInstructions || "UK EYES ONLY",
+            handlingInstructions: meta.handlingInstructions || "PUBLIC RELEASE",
             reportTitle: meta.reportTitle,
-            referenceNumber: `UKIC-${new Date().getFullYear()}-${Math.floor(Math.random()*10000)}-INTREP`,
+            referenceNumber: `RPT-${new Date().getFullYear()}-${Math.floor(Math.random()*10000)}`,
             dateOfInformation: new Date().toISOString().split('T')[0],
             executiveSummary: meta.executiveSummary,
             sections: sections,
@@ -466,7 +466,7 @@ const MissionWizard: React.FC<MissionWizardProps> = ({ config, onComplete, onCan
                {/* REVIEW RESEARCH */}
                {step === 'review_research' && (
                   <div className="max-w-3xl mx-auto space-y-6">
-                     <h2 className="text-xl font-bold uppercase text-white border-b border-gray-700 pb-2 flex items-center gap-2"><Globe className="w-5 h-5 text-cyan-500"/> Intelligence Asset Review</h2>
+                     <h2 className="text-xl font-bold uppercase text-white border-b border-gray-700 pb-2 flex items-center gap-2"><Globe className="w-5 h-5 text-cyan-500"/> Source Review</h2>
                      
                      {failedSources.length > 0 && (
                          <div className="bg-red-950/30 border border-red-900 rounded p-4 space-y-3">
@@ -493,7 +493,7 @@ const MissionWizard: React.FC<MissionWizardProps> = ({ config, onComplete, onCan
                      {resolvingSourceUrl && (
                          <div className="bg-gray-800 border border-gray-700 rounded p-4 space-y-3 animate-[fadeIn_0.2s_ease-out]">
                              <div className="flex justify-between items-center">
-                                 <h3 className="text-xs font-bold text-white uppercase">Manually Input Intelligence: {resolvingSourceUrl}</h3>
+                                 <h3 className="text-xs font-bold text-white uppercase">Manually Input Source: {resolvingSourceUrl}</h3>
                                  <button onClick={() => setResolvingSourceUrl(null)} className="text-gray-500 hover:text-white"><X className="w-4 h-4"/></button>
                              </div>
                              <textarea value={resolveText} onChange={e => setResolveText(e.target.value)} placeholder="Paste content..." className="w-full h-32 bg-black border border-gray-600 rounded p-2 text-xs text-gray-300 font-mono focus:border-uk-blue outline-none" />

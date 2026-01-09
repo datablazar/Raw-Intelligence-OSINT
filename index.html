@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Sentinel - UK Intelligence Reporter</title>
+    <title>Sentinel - UK Analysis Reporter</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Roboto+Mono:wght@400;500&family=Merriweather:ital,wght@0,300;0,400;0,700;1,300;1,400&display=swap" rel="stylesheet">
     <script>
@@ -52,6 +52,9 @@
         /* Reset shadows */
         .shadow-lg, .shadow-xl, .shadow-2xl { box-shadow: none !important; }
         
+        /* Force paper background for exports */
+        .print-paper { background-color: white !important; color: black !important; }
+
         /* Ensure background colors print for specific elements if needed */
         .print-bg-force { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         

@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Paperclip, X, FileImage, Sparkles, Globe, BrainCircuit, FileText } from 'lucide-react';
 import { Chat } from "@google/genai";
-import { Attachment, ChatMessage, IntelligenceReport } from '../types';
+import { Attachment, ChatMessage, AnalysisReport } from '../types';
 import { sendChatMessage, performSearchQuery } from '../services/geminiService';
 const loadMammoth = (() => {
   let cached: Promise<any> | null = null;
@@ -15,8 +15,8 @@ const loadMammoth = (() => {
 
 interface ChatInterfaceProps {
   chatSession: Chat | null;
-  report: IntelligenceReport | null;
-  onUpdateReport: (report: IntelligenceReport) => void;
+  report: AnalysisReport | null;
+  onUpdateReport: (report: AnalysisReport) => void;
   className?: string;
   onClose?: () => void;
 }
@@ -96,7 +96,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ chatSession, report, onUp
     }
   };
 
-  const processToolCall = async (call: any, currentReport: IntelligenceReport | null): Promise<{ reportUpdated: boolean, updatedReport: IntelligenceReport | null, message: string, result: any }> => {
+  const processToolCall = async (call: any, currentReport: AnalysisReport | null): Promise<{ reportUpdated: boolean, updatedReport: AnalysisReport | null, message: string, result: any }> => {
       const args = call.args as FunctionArgs;
       
       if (call.name === 'edit_report_section' && currentReport && args.sectionTitle && args.content) {
@@ -208,7 +208,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ chatSession, report, onUp
           <div className="bg-uk-blue/10 p-1.5 rounded-full"><BrainCircuit className="w-5 h-5 text-uk-blue" /></div>
           <div>
             <h3 className="font-bold text-uk-navy text-sm">Sentinel Assistant</h3>
-            <p className="text-[10px] uppercase text-gray-400 font-bold tracking-wider">Classified Channel</p>
+            <p className="text-[10px] uppercase text-gray-400 font-bold tracking-wider">Analysis Channel</p>
           </div>
         </div>
         {onClose && <button onClick={onClose} className="text-gray-400 hover:text-uk-blue"><X className="w-5 h-5" /></button>}

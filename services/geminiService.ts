@@ -16,19 +16,18 @@ import {
   QUERIES_SCHEMA, 
   DEFAULT_REPORT_STRUCTURE 
 } from "../constants";
-import { IntelligenceReport, Attachment, ResearchPlan, SourceReference, Entity, ReportSection, DeepResearchResult, ReportStructure, ReportStructureItem, ResearchSectionResult, FailedSource } from "../types";
+import { AnalysisReport, Attachment, ResearchPlan, SourceReference, Entity, ReportSection, DeepResearchResult, ReportStructure, ReportStructureItem, ResearchSectionResult, FailedSource } from "../types";
 
 // --- CONFIGURATION ---
-// Primary Models
+// Unified model for efficiency
 const MODEL_FAST = 'gemini-3-flash-preview';
-const MODEL_QUALITY = 'gemini-3-pro-preview';
-// Fallback Model (Reliable, Standard Tier)
-const MODEL_FALLBACK = 'gemini-2.0-flash';
+const MODEL_QUALITY = 'gemini-3-flash-preview';
+const MODEL_FALLBACK = 'gemini-3-flash-preview';
 
 // Tiers allow balancing cost/latency. 
 const CONFIG_EXTRACTION = { responseMimeType: "application/json" };
-const CONFIG_REASONING = { responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 2048 } };
-const CONFIG_DEEP_THINKING = { responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 4096 } };
+const CONFIG_REASONING = { responseMimeType: "application/json" };
+const CONFIG_DEEP_THINKING = { responseMimeType: "application/json" };
 
 const SOURCE_ANALYSIS_SCHEMA = {
   type: Type.OBJECT,
@@ -89,6 +88,25 @@ const getClient = () => {
   return clientInstance;
 };
 
+const estimateTokens = (text: string) => {
+  if (!text) return 0;
+  return Math.ceil(text.length / 4);
+};
+
+const collectTextFromContents = (contents: any) => {
+  if (!Array.isArray(contents)) return "";
+  const textParts: string[] = [];
+  contents.forEach(content => {
+    const parts = content?.parts || [];
+    parts.forEach((part: any) => {
+      if (typeof part?.text === "string") {
+        textParts.push(part.text);
+      }
+    });
+  });
+  return textParts.join("\n");
+};
+
 // --- ERROR HANDLING & RETRY LOGIC ---
 
 /**
@@ -98,6 +116,11 @@ const getClient = () => {
 const generateSafe = async (params: { model: string, contents: any, config?: any }, attempt = 1): Promise<any> => {
   const ai = getClient();
   try {
+    const promptText = collectTextFromContents(params.contents);
+    const tokenEstimate = estimateTokens(promptText);
+    if (promptText) {
+      console.info(`[Sentinel] Model ${params.model} ~${tokenEstimate} tokens (${promptText.length} chars).`);
+    }
     return await ai.models.generateContent(params);
   } catch (e: any) {
     const msg = e.toString().toLowerCase();
@@ -176,8 +199,8 @@ const safeParseJSON = <T>(text: string, fallback: T): T => {
   }
 };
 
-const MAX_FACTS_PER_SOURCE = 8;
-const MAX_EVIDENCE_SOURCES = 6;
+const MAX_FACTS_PER_SOURCE = 10;
+const MAX_EVIDENCE_SOURCES = 10;
 const MAX_EVIDENCE_CONTENT_CHARS = 1200;
 
 const formatEvidenceContent = (summary: string, facts: string[]) => {
@@ -270,6 +293,7 @@ const buildStructureContext = (context: string) => {
   const parts = [];
   if (rawSnippet) parts.push(`RAW SNIPPET:\n${rawSnippet}`);
   if (evidenceSummary) parts.push(`EVIDENCE SUMMARY:\n${evidenceSummary}`);
+  if (evidenceBlocks.length > 0) parts.push(`SOURCE COUNT: ${evidenceBlocks.length}`);
   return parts.join("\n\n").trim();
 };
 
@@ -338,8 +362,7 @@ export const runStrategyPhase = async (rawText: string, attachments: Attachment[
         model: modelSettings.model,
         contents: contents,
         config: {
-          ...modelSettings.config, // Downgrade thinking for entities if needed
-          thinkingConfig: useFallback ? undefined : { thinkingBudget: 2048 },
+          ...modelSettings.config,
           systemInstruction: ENTITY_AGENT_INSTRUCTION,
           responseSchema: ENTITY_LIST_SCHEMA,
         }
@@ -354,7 +377,7 @@ export const runStrategyPhase = async (rawText: string, attachments: Attachment[
         if (isPureResearch && instructions) {
             plan.searchQueries.push(`Comprehensive background research on: ${instructions}`);
         } else if (rawText.length > 50 || attachments.length > 0) {
-            plan.searchQueries.push("Context and background investigation for provided intelligence");
+            plan.searchQueries.push("Context and background investigation for provided material");
         }
     }
 
@@ -374,68 +397,83 @@ const executeSearchVector = async (query: string, log: LogCallback, useFallback 
     const modelSettings = getModelConfig(useFallback, 'fast');
 
     try {
-        const res = await generateSafe({
-            model: modelSettings.model, 
-            contents: [{ role: 'user', parts: [{ text: `Query: "${query}". Return JSON with: summary (1-2 sentences), facts (5-7 bullet facts), sources (url/title). Keep facts concise.` }] }],
-            config: { 
-              ...CONFIG_EXTRACTION,
-              tools: [{ googleSearch: {} }],
-              responseSchema: SEARCH_VECTOR_SCHEMA
-            } 
-        });
+        const MAX_SEARCH_ATTEMPTS = 2;
+        let fallbackResult = { text: "", sources: [] as SourceReference[], summary: "", facts: [] as string[] };
 
-        const gatheredSources: SourceReference[] = [];
-        const rawUrls: string[] = [];
-        const parsed = safeParseJSON(res.text || "{}", { summary: "", facts: [], sources: [] as { url: string; title?: string }[] });
-        const summary = String(parsed.summary || "").trim();
-        const facts = Array.isArray(parsed.facts) ? parsed.facts.filter(Boolean).slice(0, MAX_FACTS_PER_SOURCE) : [];
+        for (let attempt = 1; attempt <= MAX_SEARCH_ATTEMPTS; attempt += 1) {
+            const res = await generateSafe({
+                model: modelSettings.model,
+                contents: [{ role: 'user', parts: [{ text: `Query: "${query}". Return JSON with: summary (1-2 sentences), facts (5-7 bullet facts), sources (url/title). Keep facts concise.` }] }],
+                config: {
+                  ...CONFIG_EXTRACTION,
+                  tools: [{ googleSearch: {} }],
+                  responseSchema: SEARCH_VECTOR_SCHEMA
+                }
+            });
 
-        // 1. Capture Grounding Metadata
-        res.candidates?.[0]?.groundingMetadata?.groundingChunks?.forEach((c: any) => {
-            const uri = c.web?.uri;
-            if (uri && isValidSourceUrl(uri)) {
-                rawUrls.push(uri);
-                gatheredSources.push({
-                    url: uri,
-                    title: c.web.title || formatSourceTitle(uri),
-                    summary: `Source via query: "${query}"`
-                });
+            const gatheredSources: SourceReference[] = [];
+            const rawUrls: string[] = [];
+            const parsed = safeParseJSON(res.text || "{}", { summary: "", facts: [], sources: [] as { url: string; title?: string }[] });
+            const summary = String(parsed.summary || "").trim();
+            const facts = Array.isArray(parsed.facts) ? parsed.facts.filter(Boolean).slice(0, MAX_FACTS_PER_SOURCE) : [];
+
+            // 1. Capture Grounding Metadata
+            res.candidates?.[0]?.groundingMetadata?.groundingChunks?.forEach((c: any) => {
+                const uri = c.web?.uri;
+                if (uri && isValidSourceUrl(uri)) {
+                    rawUrls.push(uri);
+                    gatheredSources.push({
+                        url: uri,
+                        title: c.web.title || formatSourceTitle(uri),
+                        summary: `Source via query: "${query}"`
+                    });
+                }
+            });
+
+            // 2. Sources from JSON payload
+            (parsed.sources || []).forEach(source => {
+                if (source?.url && isValidSourceUrl(source.url) && !rawUrls.includes(source.url)) {
+                    rawUrls.push(source.url);
+                    gatheredSources.push({
+                        url: source.url,
+                        title: source.title || formatSourceTitle(source.url),
+                        summary: `Source via query: "${query}"`
+                    });
+                }
+            });
+
+            // 3. Fallback Text Extraction
+            const textResponse = formatEvidenceContent(summary, facts);
+            const textUrls = extractUrls(textResponse);
+            textUrls.forEach(url => {
+                if (isValidSourceUrl(url) && !rawUrls.includes(url)) {
+                    rawUrls.push(url);
+                    gatheredSources.push({
+                        url: url,
+                        title: formatSourceTitle(url),
+                        summary: `Extracted from analysis of "${query}"`
+                    });
+                }
+            });
+
+            fallbackResult = { text: textResponse, sources: gatheredSources, summary, facts };
+
+            if (rawUrls.length > 0) {
+                log(`Data Acquired: "${query}"`, 'success', rawUrls);
+                return fallbackResult;
             }
-        });
 
-        // 2. Sources from JSON payload
-        (parsed.sources || []).forEach(source => {
-            if (source?.url && isValidSourceUrl(source.url) && !rawUrls.includes(source.url)) {
-                rawUrls.push(source.url);
-                gatheredSources.push({
-                    url: source.url,
-                    title: source.title || formatSourceTitle(source.url),
-                    summary: `Source via query: "${query}"`
-                });
+            if (attempt < MAX_SEARCH_ATTEMPTS) {
+                log(`No links returned for "${query}". Retrying...`, 'info');
+                await new Promise(r => setTimeout(r, 800));
+                continue;
             }
-        });
 
-        // 3. Fallback Text Extraction
-        const textResponse = formatEvidenceContent(summary, facts);
-        const textUrls = extractUrls(textResponse);
-        textUrls.forEach(url => {
-            if (isValidSourceUrl(url) && !rawUrls.includes(url)) {
-                rawUrls.push(url);
-                gatheredSources.push({
-                    url: url,
-                    title: formatSourceTitle(url),
-                    summary: `Extracted from analysis of "${query}"`
-                });
-            }
-        });
-
-        if (rawUrls.length > 0) {
-            log(`Data Acquired: "${query}"`, 'success', rawUrls);
-        } else {
             log(`Search Complete (No Direct Links): "${query}"`, 'info');
+            return fallbackResult;
         }
 
-        return { text: textResponse, sources: gatheredSources, summary, facts };
+        return fallbackResult;
 
     } catch (e) {
         log(`Vector Failed: "${query}"`, 'info');
@@ -452,8 +490,9 @@ export const runResearchPhase = async (
   mission = "",
   adapters?: GeminiTestAdapters
 ): Promise<DeepResearchResult> => {
-  const MAX_RESEARCH_DEPTH = 4;
+  const MAX_RESEARCH_DEPTH = 3;
   const MAX_URL_CONCURRENCY = 5;
+  const URL_REQUEST_DELAY_MS = 750;
   const contextParts: string[] = [];
   const gatheredSources: Map<string, SourceReference> = new Map();
   const failedUrls: FailedSource[] = [];
@@ -591,6 +630,9 @@ export const runResearchPhase = async (
       while (true) {
         const currentIndex = nextIndex++;
         if (currentIndex >= items.length) break;
+        if (currentIndex > 0 && URL_REQUEST_DELAY_MS > 0) {
+          await new Promise(resolve => setTimeout(resolve, URL_REQUEST_DELAY_MS));
+        }
         await handler(items[currentIndex]);
       }
     });
@@ -713,7 +755,7 @@ export const runResearchPhase = async (
       });
       return safeParseJSON<{queries: string[]}>(response.text || "{}", { queries: [] }).queries;
     } catch (e) {
-      log("Gap review failed. Continuing with gathered intelligence.", 'info');
+      log("Gap review failed. Continuing with gathered data.", 'info');
       return [];
     }
   };
@@ -727,7 +769,7 @@ export const runResearchPhase = async (
 
     if (depth >= MAX_RESEARCH_DEPTH) return;
 
-    log("Reviewing gathered intelligence for gaps...", 'ai');
+    log("Reviewing gathered data for gaps...", 'ai');
     const newQueries = await reviewForGaps();
     const filteredNewQueries = newQueries
       .map(q => q.trim())
@@ -771,6 +813,20 @@ export const runStructurePhase = async (context: string, attachments: Attachment
     
     const structure = safeParseJSON<ReportStructure>(res.text || "{}", DEFAULT_REPORT_STRUCTURE as ReportStructure);
     if (!structure.sections || structure.sections.length === 0) return DEFAULT_REPORT_STRUCTURE as ReportStructure;
+    const evidenceCount = extractCitationBlocks(context).length;
+    if (evidenceCount >= 6 && structure.sections.length < 5) {
+      const extras: ReportStructureItem[] = [
+        { title: "Key Findings", type: "list", guidance: "Evidence-backed findings derived from sources." },
+        { title: "Actors & Relationships", type: "text", guidance: "Key actors, affiliations, and relationships." },
+        { title: "Methods & Patterns", type: "text", guidance: "Methods, techniques, and observable patterns." }
+      ];
+      const existingTitles = new Set(structure.sections.map(section => section.title.toLowerCase()));
+      extras.forEach(extra => {
+        if (!existingTitles.has(extra.title.toLowerCase())) {
+          structure.sections.push(extra);
+        }
+      });
+    }
     return structure;
   } catch (e) {
       console.error(e);
@@ -796,7 +852,7 @@ export const runDraftingPhase = async (
   const evidenceBlocks = extractCitationBlocks(parsedContext.research || context);
   const rawSnippet = parsedContext.raw ? parsedContext.raw.slice(0, 2000) : "";
   const editorInstruction = `
-ROLE: Senior Intelligence Editor.
+ROLE: Senior Editor.
 TASK: Audit the draft against doctrine and evidence.
 CHECKS REQUIRED:
 1) Missing citations for factual claims (use [Source X] where applicable).
@@ -845,22 +901,42 @@ OUTPUT: Provide a verdict and corrective feedback focused on claims and citation
     return fallback.slice(0, MAX_EVIDENCE_SOURCES);
   };
 
+  const buildLengthGuide = (sourceCount: number, sectionType: ReportStructureItem["type"]) => {
+    const paragraphTarget = Math.min(10, Math.max(3, Math.ceil(sourceCount * 2)));
+    const listTarget = Math.min(18, Math.max(6, sourceCount * 3));
+    if (sectionType === "list") {
+      return `Provide ${listTarget}-${listTarget + 2} bullets if evidence supports it.`;
+    }
+    return `Provide ${paragraphTarget}-${paragraphTarget + 1} paragraphs if evidence supports it.`;
+  };
+
   const buildEvidencePack = (sectionPlan: ReportStructureItem) => {
     const selected = selectEvidenceBlocks(sectionPlan);
     if (selected.length === 0) {
-      return rawSnippet ? `RAW SNIPPET:\n${rawSnippet}` : "";
+      return { pack: rawSnippet ? `RAW SNIPPET:\n${rawSnippet}` : "", count: 0 };
     }
     const manifest = selected.map((block, index) => `[Source ${index + 1}] ${block.title} (${block.url})`);
     const evidenceText = selected.map(block => block.block).join("\n\n");
-    return `SOURCE MANIFEST:\n${manifest.join("\n")}\n\nEVIDENCE:\n${evidenceText}`;
+    return {
+      pack: `SOURCE MANIFEST:\n${manifest.join("\n")}\n\nEVIDENCE:\n${evidenceText}`,
+      count: selected.length
+    };
   };
 
-  const buildDraftPrompt = (sectionPlan: ReportStructureItem, evidencePack: string, draft?: string, feedback?: string) => {
+  const buildDraftPrompt = (
+    sectionPlan: ReportStructureItem,
+    evidencePack: string,
+    lengthGuide: string,
+    draft?: string,
+    feedback?: string
+  ) => {
     const basePrompt = [
       `SECTION: ${sectionPlan.title}`,
       `GUIDANCE: ${sectionPlan.guidance}`,
       evidencePack ? `EVIDENCE PACK:\n${evidencePack}` : "EVIDENCE PACK: None",
-      "OUTPUT: Provide content plus a short claims list with citations (3-6 items)."
+      `LENGTH TARGET: ${lengthGuide}`,
+      "USE ALL RELEVANT FACTS from the evidence pack where applicable.",
+      "OUTPUT: Provide content plus a short claims list with citations (3-8 items)."
     ];
 
     if (draft && feedback) {
@@ -883,10 +959,11 @@ OUTPUT: Provide a verdict and corrective feedback focused on claims and citation
   const generateSectionDraft = async (
     sectionPlan: ReportStructureItem,
     evidencePack: string,
+    lengthGuide: string,
     draft?: string,
     feedback?: string
   ): Promise<DraftPayload> => {
-    const parts = constructParts(buildDraftPrompt(sectionPlan, evidencePack, draft, feedback), attachments);
+    const parts = constructParts(buildDraftPrompt(sectionPlan, evidencePack, lengthGuide, draft, feedback), attachments);
 
     const res = await generateSafeAdapter({
       model: modelSettings.model,
@@ -937,8 +1014,10 @@ OUTPUT: Provide a verdict and corrective feedback focused on claims and citation
        const batchPromises = batch.map(async (sectionPlan) => {
           log(`Drafting Component: ${sectionPlan.title}`, 'ai');
           try {
-              const evidencePack = buildEvidencePack(sectionPlan);
-              let currentDraft = await generateSectionDraft(sectionPlan, evidencePack);
+              const evidence = buildEvidencePack(sectionPlan);
+              const evidencePack = evidence.pack;
+              const lengthGuide = buildLengthGuide(evidence.count, sectionPlan.type);
+              let currentDraft = await generateSectionDraft(sectionPlan, evidencePack, lengthGuide);
               for (let attempt = 0; attempt <= MAX_REVISIONS; attempt++) {
                 const review = await reviewDraft(sectionPlan, currentDraft.claims, evidencePack);
                 if (!review || review.verdict === "Approved") {
@@ -952,6 +1031,7 @@ OUTPUT: Provide a verdict and corrective feedback focused on claims and citation
                 currentDraft = await generateSectionDraft(
                   sectionPlan,
                   evidencePack,
+                  lengthGuide,
                   normaliseDraftContent(currentDraft.content),
                   review.feedback
                 );
@@ -991,26 +1071,25 @@ export const runFinalizePhase = async (sections: ReportSection[], reliability: s
         model: modelSettings.model,
         contents: [{ role: 'user', parts: [{ text: `BODY: ${JSON.stringify(sections)}\nRELIABILITY: ${reliability}` }] }],
         config: {
-            ...modelSettings.config, // Downgrade if needed
-            thinkingConfig: useFallback ? undefined : { thinkingBudget: 2048 },
+            ...modelSettings.config,
             systemInstruction: instructionWithUser,
             responseSchema: FINAL_METADATA_SCHEMA,
         }
       });
       
       return safeParseJSON(res.text || "{}", {
-        classification: "OFFICIAL-SENSITIVE",
-        reportTitle: "INTELLIGENCE REPORT",
+        classification: "PUBLIC",
+        reportTitle: "ANALYTICAL REPORT",
         executiveSummary: "Summary generation failed.",
-        overallConfidence: "Low Probability"
+        overallConfidence: "Not Assessed"
       });
   } catch (e: any) {
       if (e.message === 'QUOTA_EXCEEDED') throw e;
       return {
-          classification: "OFFICIAL-SENSITIVE",
-          reportTitle: "INTELLIGENCE REPORT (DRAFT)",
+          classification: "PUBLIC",
+          reportTitle: "ANALYTICAL REPORT (DRAFT)",
           executiveSummary: "Summary generation failed.",
-          overallConfidence: "Low Probability"
+          overallConfidence: "Not Assessed"
       };
   }
 };
@@ -1020,7 +1099,7 @@ export const runFinalizePhase = async (sections: ReportSection[], reliability: s
 export const generateMoreQueries = async (rawText: string, currentQueries: string[], instructions: string): Promise<string[]> => {
   try {
       const prompt = `
-        ROLE: Senior Intelligence Planner.
+        ROLE: Senior Research Planner.
         TASK: Generate 3-5 NEW, DISTINCT search queries to expand the research strategy.
         CONTEXT: ${rawText.substring(0, 2000)}
         CURRENT STRATEGY: ${JSON.stringify(currentQueries)}
@@ -1105,12 +1184,12 @@ const searchGoogleTool: FunctionDeclaration = {
     }
 };
 
-export const createReportChatSession = (report: IntelligenceReport, rawContext: string) => {
+export const createReportChatSession = (report: AnalysisReport, rawContext: string) => {
     const ai = getClient();
     return ai.chats.create({
       model: MODEL_FALLBACK, 
       config: {
-        systemInstruction: `You are 'Sentinel Assistant'. Report: ${JSON.stringify(report)}. Raw: ${rawContext.substring(0,2000)}. Protocol: Professional UK Intelligence.`,
+        systemInstruction: `You are 'Sentinel Assistant'. Report: ${JSON.stringify(report)}. Raw: ${rawContext.substring(0,2000)}. Protocol: Professional analytical reporting.`,
         tools: [{ functionDeclarations: [editReportTool, addSourcesTool, searchGoogleTool] }]
       }
     });
@@ -1146,7 +1225,7 @@ export const sendChatMessage = async (chat: Chat, message: string, attachments: 
     return await chat.sendMessage({ message: parts });
 };
 
-export const refineSection = async (report: IntelligenceReport, sectionTitle: string, instruction: string): Promise<any> => {
+export const refineSection = async (report: AnalysisReport, sectionTitle: string, instruction: string): Promise<any> => {
     const section = report.sections.find(s => s.title === sectionTitle);
     if (!section) throw new Error("Section not found");
   
@@ -1217,8 +1296,7 @@ export const conductDeepResearch = async (topic: string, fullContext: string): P
                 }
               },
               required: ["title", "content", "links"]
-            },
-            thinkingConfig: { thinkingBudget: 4096 }
+            }
           }
         });
         

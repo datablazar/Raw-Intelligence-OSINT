@@ -123,14 +123,14 @@ describe("runDraftingPhase", () => {
     const generateSafe = async (params: any) => {
       const system = params?.config?.systemInstruction || "";
       const text = params?.contents?.[0]?.parts?.[0]?.text || "";
-      if (system.includes("Senior Intelligence Editor")) {
+      if (system.includes("Senior Editor")) {
         editorCalls += 1;
         if (editorCalls === 1) {
           return { text: JSON.stringify({ verdict: "Rejected", feedback: "Add citations." }) };
         }
         return { text: JSON.stringify({ verdict: "Approved", feedback: "OK" }) };
       }
-      if (system.includes("Intelligence Desk Officer")) {
+      if (system.includes("Senior Analyst")) {
         writerCalls += 1;
         if (text.includes("REVISION TASK")) {
           return { text: JSON.stringify({ content: "Revised draft [Source 1]", claims: ["Claim [Source 1]"] }) };
@@ -157,10 +157,10 @@ describe("runDraftingPhase", () => {
 
     const generateSafe = async (params: any) => {
       const system = params?.config?.systemInstruction || "";
-      if (system.includes("Senior Intelligence Editor")) {
+      if (system.includes("Senior Editor")) {
         throw new Error("timeout");
       }
-      if (system.includes("Intelligence Desk Officer")) {
+      if (system.includes("Senior Analyst")) {
         return { text: JSON.stringify({ content: "Draft ok.", claims: ["Claim [Source 1]"] }) };
       }
       return { text: JSON.stringify({}) };

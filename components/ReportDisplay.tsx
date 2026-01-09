@@ -1,18 +1,18 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { IntelligenceReport, HistoryItem } from '../types';
+import { AnalysisReport, HistoryItem } from '../types';
 import { Printer, Download, Clock, ChevronDown, MessageSquareText, Globe, Pencil, Check, X as XIcon } from 'lucide-react';
 import { createReportChatSession, verifyClaim, VerificationResult, conductDeepResearch } from '../services/geminiService';
 import ChatInterface from './ChatInterface';
 import { Chat } from '@google/genai';
 
 interface ReportDisplayProps {
-  report: IntelligenceReport | null;
+  report: AnalysisReport | null;
   reset: () => void;
   history: HistoryItem[];
   currentReportId: string | null;
   onSelectReport: (id: string) => void;
-  onUpdateReport: (report: IntelligenceReport) => void;
+  onUpdateReport: (report: AnalysisReport) => void;
   onClearHistory?: () => void;
   rawContext?: string;
   onProcessingStart?: (logs: any[]) => void;
@@ -318,7 +318,7 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
       });
 
       const blob = await Packer.toBlob(doc);
-      FileSaver.saveAs(blob, `INTREP_${report.dateOfInformation}_${report.reportTitle.replace(/[^a-zA-Z0-9]/g, '_').substring(0,30)}.docx`);
+      FileSaver.saveAs(blob, `REPORT_${report.dateOfInformation}_${report.reportTitle.replace(/[^a-zA-Z0-9]/g, '_').substring(0,30)}.docx`);
     } catch (e) {
         console.error(e);
         alert("Error creating document.");
@@ -372,32 +372,32 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
       <div className="flex flex-1 overflow-hidden relative">
         
         {/* Main Workspace */}
-        <div className="flex-1 overflow-y-auto bg-gray-950 p-4 md:p-12 flex justify-center">
+        <div className="flex-1 overflow-y-auto bg-[radial-gradient(circle_at_top,_rgba(59,130,246,0.14),_transparent_55%)] bg-gray-950 p-4 md:p-12 flex justify-center">
           
           {/* --- PAPER VIEW --- */}
           {activeTab === 'report' && (
-            <div className="bg-white w-full max-w-[210mm] min-h-[297mm] h-auto shadow-2xl relative text-black font-serif print:shadow-none print:w-full print:max-w-none print:m-0 print:p-0 flex flex-col">
+            <div className="bg-[#fdfdf9] w-full max-w-[210mm] min-h-[297mm] h-auto shadow-2xl relative text-black font-serif print:shadow-none print:w-full print:max-w-none print:m-0 print:p-0 flex flex-col border border-slate-200 print-paper">
               
-              <div className="p-12 md:p-16 print:p-12 flex-grow">
+              <div className="p-12 md:p-16 print:p-12">
                  
                  {/* Header Meta */}
-                 <div className="border-b-2 border-black pb-6 mb-8">
-                    <h1 className="text-2xl font-bold uppercase tracking-wide leading-tight mb-2 font-sans text-gray-900">{report.reportTitle}</h1>
-                    <div className="flex justify-between items-end text-xs font-sans uppercase text-gray-500 font-bold tracking-wider">
-                       <span>Intelligence Assessment</span>
+                 <div className="border-b-2 border-slate-900 pb-6 mb-8">
+                    <h1 className="text-2xl md:text-3xl font-bold uppercase tracking-wide leading-tight mb-3 font-sans text-gray-900">{report.reportTitle}</h1>
+                    <div className="flex flex-wrap gap-3 justify-between items-end text-[11px] font-sans uppercase text-gray-500 font-bold tracking-wider">
+                       <span>Analytical Report</span>
                        <span>Date: {report.dateOfInformation}</span>
-                       <span className={`px-2 py-0.5 text-white ${report.classification.includes('SECRET') ? 'bg-red-600' : 'bg-uk-blue'}`}>{report.classification}</span>
+                       <span className="px-2 py-0.5 text-white bg-uk-blue">{report.classification}</span>
                     </div>
                  </div>
 
                  {/* Executive Summary */}
-                 <div className="bg-gray-50 p-6 mb-10 border-l-4 border-uk-blue font-sans print-bg-force break-inside-avoid">
+                 <div className="bg-slate-50 p-6 mb-10 border-l-4 border-uk-blue font-sans print-bg-force break-inside-avoid">
                     <h3 className="font-bold text-xs uppercase mb-3 tracking-wider text-uk-blue">Executive Summary (BLUF)</h3>
-                    <p className="text-sm leading-relaxed font-medium text-gray-900 text-justify">{report.executiveSummary}</p>
+                    <p className="text-[15px] leading-7 font-medium text-gray-900 text-justify">{report.executiveSummary}</p>
                  </div>
 
                  {/* Sections */}
-                 <div className="space-y-8">
+                 <div className="space-y-9">
                     {report.sections.map((section, idx) => {
                         const contentArray = Array.isArray(section.content) ? section.content : section.content.split('\n');
                         
@@ -412,7 +412,7 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
                                     <span className="text-uk-blue print:text-black">{idx + 1}.0</span> {section.title}
                                 </h2>
 
-                                <div className="text-sm leading-relaxed text-justify text-gray-800 space-y-3">
+                                <div className="text-[15px] leading-7 text-justify text-gray-800 space-y-4">
                                     {contentArray.map((para, i) => {
                                         const trimmed = para.trim();
                                         if (!trimmed) return null;
@@ -506,9 +506,9 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
               </div>
               
               {/* Paper Footer */}
-              <div className="h-16 w-full border-t border-gray-100 mt-auto flex items-center justify-between px-12 text-[10px] text-gray-400 font-sans">
+              <div className="h-16 w-full border-t border-gray-100 mt-10 flex items-center justify-between px-12 text-[10px] text-gray-400 font-sans">
                   <span>{report.referenceNumber}</span>
-                  <span className="font-bold text-uk-blue uppercase tracking-widest">OFFICIAL-SENSITIVE</span>
+                  <span className="font-bold text-uk-blue uppercase tracking-widest">{report.classification}</span>
                   <span>Page 1</span>
               </div>
             </div>
