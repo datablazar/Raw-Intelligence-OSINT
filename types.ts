@@ -33,6 +33,12 @@ export interface SourceReference {
   active?: boolean; // For UI toggling
 }
 
+export interface FailedSource {
+  url: string;
+  reason: string;
+  isHighValue: boolean;
+}
+
 export interface IntelligenceReport {
   classification: Classification;
   handlingInstructions: string;
@@ -53,6 +59,7 @@ export interface ProcessingLog {
   message: string;
   type: 'info' | 'network' | 'ai' | 'success' | 'planning' | 'synthesizing';
   timestamp: number;
+  details?: string[]; // URLS or sub-steps
 }
 
 export interface ProcessingState {
@@ -100,6 +107,7 @@ export interface ResearchPlan {
   reliabilityAssessment: string;
   informationGaps: string[];
   searchQueries: string[];
+  foundUrls?: string[]; // URLs extracted from source docs
 }
 
 export interface ReportStructureItem {
@@ -115,6 +123,7 @@ export interface ReportStructure {
 export interface DeepResearchResult {
   context: string;
   sources: SourceReference[];
+  failedUrls?: FailedSource[];
 }
 
 export interface ResearchSectionResult {

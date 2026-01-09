@@ -1,11 +1,11 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { IntelligenceReport, Classification, HistoryItem } from '../types';
-import { Printer, Download, Clock, ChevronDown, Sparkles, MessageSquareText, Globe, AlertCircle, Pencil, User, MapPin, Building, Hash, Zap, Crosshair, ExternalLink, ShieldAlert } from 'lucide-react';
-import { refineSection, createReportChatSession, verifyClaim, VerificationResult, conductDeepResearch } from '../services/geminiService';
+import { IntelligenceReport, HistoryItem } from '../types';
+import { Printer, Download, Clock, ChevronDown, MessageSquareText, Globe, Pencil, Check, X as XIcon } from 'lucide-react';
+import { createReportChatSession, verifyClaim, VerificationResult, conductDeepResearch } from '../services/geminiService';
 import ChatInterface from './ChatInterface';
 import { Chat } from '@google/genai';
-import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, BorderStyle } from "docx";
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, BorderStyle, LevelFormat, WidthType } from "docx";
 import FileSaver from "file-saver";
 
 interface ReportDisplayProps {
@@ -27,11 +27,9 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
   history, 
   onSelectReport,
   onUpdateReport,
-  onClearHistory,
   rawContext = "",
   onProcessingStart,
-  onProcessingEnd,
-  onProcessingLog
+  onProcessingEnd
 }) => {
   const [activeTab, setActiveTab] = useState<'report' | 'entities'>('report');
   const [showHistory, setShowHistory] = useState(false);
@@ -57,44 +55,66 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
 
   if (!report) return null;
 
-  // --- MARKDOWN HELPERS ---
+  // --- PARSING HELPERS ---
 
-  const renderMarkdown = (text: string) => {
+  const MARKDOWN_REGEX = /(\*\*\*.*?\*\*\*)|(\*\*.*?\*\*)|(\*.*?\*)|(\[Source \d+\])/g;
+
+  /**
+   * Helper to parse a string into React Nodes with styling
+   */
+  const parseMarkdownToReact = (text: string, keyPrefix: string) => {
     if (!text) return null;
-    const parts = text.split(/(\*\*.*?\*\*)/g);
+    const parts = text.split(MARKDOWN_REGEX).filter(p => p);
+
     return parts.map((part, i) => {
-      if (part.startsWith('**') && part.endsWith('**')) {
-        return <strong key={i} className="font-bold text-black">{part.slice(2, -2)}</strong>;
+      if (!part) return null;
+      const key = `${keyPrefix}-${i}`;
+
+      if (part.startsWith('***') && part.endsWith('***')) {
+        return <strong key={key} className="italic">{part.slice(3, -3)}</strong>;
       }
-      const subParts = part.split(/(\*.*?\*)/g);
-      return subParts.map((subPart, j) => {
-          if (subPart.startsWith('*') && subPart.endsWith('*')) {
-              return <em key={`${i}-${j}`} className="italic">{subPart.slice(1, -1)}</em>;
-          }
-          return subPart;
-      });
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return <strong key={key}>{part.slice(2, -2)}</strong>;
+      }
+      if (part.startsWith('*') && part.endsWith('*')) {
+        return <em key={key}>{part.slice(1, -1)}</em>;
+      }
+      if (part.match(/^\[Source \d+\]$/)) {
+          return <sup key={key} className="text-uk-blue font-bold text-[9px] ml-0.5 select-none">{part}</sup>;
+      }
+      return <span key={key}>{part}</span>;
     });
   };
 
-  const createTextRunsFromMarkdown = (text: string): TextRun[] => {
-     const parts = text.split(/(\*\*.*?\*\*)/g);
-     const runs: TextRun[] = [];
-     
-     parts.forEach(part => {
-         if (part.startsWith('**') && part.endsWith('**')) {
-             runs.push(new TextRun({ text: part.slice(2, -2), bold: true, size: 22 })); // Size 22 = 11pt
-         } else {
-             const subParts = part.split(/(\*.*?\*)/g);
-             subParts.forEach(sp => {
-                if (sp.startsWith('*') && sp.endsWith('*')) {
-                    runs.push(new TextRun({ text: sp.slice(1, -1), italics: true, size: 22 }));
-                } else if (sp) {
-                    runs.push(new TextRun({ text: sp, size: 22 }));
-                }
-             });
-         }
-     });
-     return runs;
+  /**
+   * Helper to parse a string into DOCX TextRuns
+   */
+  const parseMarkdownToDocx = (text: string): TextRun[] => {
+    if (!text) return [];
+    const parts = text.split(MARKDOWN_REGEX).filter(p => p);
+
+    return parts.map(part => {
+        if (!part) return new TextRun("");
+        
+        if (part.startsWith('***') && part.endsWith('***')) {
+            return new TextRun({ text: part.slice(3, -3), bold: true, italics: true, font: "Calibri", size: 22 });
+        }
+        if (part.startsWith('**') && part.endsWith('**')) {
+            return new TextRun({ text: part.slice(2, -2), bold: true, font: "Calibri", size: 22 });
+        }
+        if (part.startsWith('*') && part.endsWith('*')) {
+            return new TextRun({ text: part.slice(1, -1), italics: true, font: "Calibri", size: 22 });
+        }
+        if (part.match(/^\[Source \d+\]$/)) {
+            return new TextRun({ text: part, size: 14, color: "1d4ed8", superScript: true, font: "Calibri" });
+        }
+        return new TextRun({ text: part, font: "Calibri", size: 22 });
+    });
+  };
+
+  const getIndentLevel = (text: string) => {
+      const spaces = text.match(/^\s*/)?.[0].length || 0;
+      return Math.floor(spaces / 2); // 2 spaces = 1 indent level
   };
 
   // --- ACTIONS ---
@@ -110,11 +130,9 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
 
   const handleSaveEdit = () => {
     if (!editSectionTitle) return;
-    const isList = report.sections.find(s => s.title === editSectionTitle)?.type === 'list';
-    const newContent = isList ? editContent.split('\n').filter(s=>s) : editContent;
     onUpdateReport({
         ...report,
-        sections: report.sections.map(s => s.title === editSectionTitle ? { ...s, content: newContent } : s)
+        sections: report.sections.map(s => s.title === editSectionTitle ? { ...s, content: editContent } : s)
     });
     setEditSectionTitle(null);
   };
@@ -139,81 +157,131 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
     if (!report) return;
 
     try {
+      // Prepare sections
+      const docxSections = report.sections.flatMap((s, secIdx) => {
+        const sectionHeader = new Paragraph({
+            text: `${secIdx + 1}.0  ${s.title.toUpperCase()}`,
+            heading: HeadingLevel.HEADING_2,
+            spacing: { before: 400, after: 200 },
+            border: { bottom: { color: "CCCCCC", space: 4, value: BorderStyle.SINGLE, size: 4 } }
+        });
+
+        const contentLines = Array.isArray(s.content) ? s.content : s.content.split('\n');
+        
+        const contentParagraphs = contentLines.map(line => {
+            const trimmed = line.trim();
+            if (!trimmed) return new Paragraph({ text: "" });
+
+            const indent = getIndentLevel(line);
+
+            // Detect Bullet Lists
+            if (trimmed.startsWith('- ') || trimmed.startsWith('• ') || trimmed.startsWith('* ')) {
+                const cleanText = trimmed.replace(/^[\-\•\*]\s+/, '');
+                return new Paragraph({
+                    children: parseMarkdownToDocx(cleanText),
+                    bullet: { level: indent }, 
+                    spacing: { after: 120 },
+                    indent: { left: 720 + (indent * 360), hanging: 260 }
+                });
+            }
+            
+            // Detect Numbered Lists
+            if (/^\d+\.\s/.test(trimmed)) {
+                const cleanText = trimmed.replace(/^\d+\.\s+/, '');
+                return new Paragraph({
+                    children: parseMarkdownToDocx(cleanText),
+                    numbering: { reference: "standard-numbering", level: indent },
+                    spacing: { after: 120 },
+                    indent: { left: 720 + (indent * 360), hanging: 260 }
+                });
+            }
+
+            // Standard Paragraph
+            return new Paragraph({
+                children: parseMarkdownToDocx(trimmed),
+                alignment: AlignmentType.JUSTIFIED,
+                spacing: { after: 200, line: 276 },
+                indent: indent > 0 ? { left: 720 + (indent * 360) } : undefined
+            });
+        });
+
+        return [sectionHeader, ...contentParagraphs];
+      });
+
       const doc = new Document({
+        numbering: {
+            config: [
+                {
+                    reference: "standard-numbering",
+                    levels: [
+                        { level: 0, format: LevelFormat.DECIMAL, text: "%1.", alignment: AlignmentType.START, style: { paragraph: { indent: { left: 720, hanging: 260 } } } },
+                        { level: 1, format: LevelFormat.LOWER_LETTER, text: "%2.", alignment: AlignmentType.START, style: { paragraph: { indent: { left: 1440, hanging: 260 } } } },
+                        { level: 2, format: LevelFormat.LOWER_ROMAN, text: "%3.", alignment: AlignmentType.START, style: { paragraph: { indent: { left: 2160, hanging: 260 } } } }
+                    ]
+                }
+            ]
+        },
         styles: {
             paragraphStyles: [
                 {
                     id: "Normal",
                     name: "Normal",
-                    run: { font: "Calibri", size: 22 }, // 11pt
-                    paragraph: { spacing: { after: 120 } }
+                    run: { font: "Calibri", size: 22 },
+                    paragraph: { spacing: { after: 200 } }
                 },
                 {
                     id: "Heading1",
                     name: "Heading 1",
                     run: { font: "Calibri", size: 32, bold: true, color: "111111" },
-                    paragraph: { spacing: { before: 240, after: 120 } }
+                    paragraph: { spacing: { before: 400, after: 200 } }
                 },
                 {
                     id: "Heading2",
                     name: "Heading 2",
-                    run: { font: "Calibri", size: 26, bold: true, color: "1d4ed8" },
-                    paragraph: { spacing: { before: 240, after: 120 } }
+                    run: { font: "Calibri", size: 24, bold: true, color: "1d4ed8" },
+                    paragraph: { spacing: { before: 400, after: 200 } }
                 }
             ]
         },
         sections: [{
           properties: {},
           children: [
-            // Title
+            // Title Area
             new Paragraph({
-              text: report.reportTitle,
-              heading: HeadingLevel.TITLE,
               alignment: AlignmentType.CENTER,
-              run: { font: "Calibri", size: 36, bold: true }
+              spacing: { after: 200 },
+              children: [ new TextRun({ text: report.reportTitle, font: "Calibri", size: 36, bold: true }) ]
             }),
-            // Meta
+            // Meta Data Bar
             new Paragraph({
               alignment: AlignmentType.CENTER,
               children: [
-                  new TextRun({ text: `DATE: ${report.dateOfInformation.toUpperCase()}`, bold: true, size: 16 }),
-                  new TextRun({ text: " | ", size: 16 }),
-                  new TextRun({ text: `REF: ${report.referenceNumber || "N/A"}`, size: 16 })
+                  new TextRun({ text: `DATE: ${report.dateOfInformation.toUpperCase()}`, bold: true, size: 16, font: "Calibri" }),
+                  new TextRun({ text: "  |  ", size: 16, font: "Calibri" }),
+                  new TextRun({ text: `REF: ${report.referenceNumber || "N/A"}`, size: 16, font: "Calibri" }),
+                  new TextRun({ text: "  |  ", size: 16, font: "Calibri" }),
+                  new TextRun({ text: `${report.classification}`, bold: true, color: "FF0000", size: 16, font: "Calibri" })
               ],
               border: { bottom: { color: "000000", space: 12, value: BorderStyle.SINGLE, size: 6 } },
               spacing: { after: 400 }
             }),
+
             // Executive Summary
             new Paragraph({
                 text: "EXECUTIVE SUMMARY",
                 heading: HeadingLevel.HEADING_2,
+                spacing: { before: 200, after: 120 }
             }),
             new Paragraph({
-                children: [ new TextRun({ text: report.executiveSummary }) ],
-                border: { left: { color: "000000", space: 12, value: BorderStyle.SINGLE, size: 12 } },
+                children: [ new TextRun({ text: report.executiveSummary, italics: true, font: "Calibri", size: 22 }) ],
+                border: { left: { color: "1d4ed8", space: 12, value: BorderStyle.SINGLE, size: 24 } },
                 indent: { left: 240 },
-                spacing: { after: 400 }
+                spacing: { after: 400 },
+                alignment: AlignmentType.JUSTIFIED
             }),
-            // Sections
-            ...report.sections.flatMap((s, i) => {
-                const head = new Paragraph({
-                    text: `${i+1}.0 ${s.title.toUpperCase()}`,
-                    heading: HeadingLevel.HEADING_2
-                });
-                let body: Paragraph[] = [];
-                if (Array.isArray(s.content)) {
-                    body = s.content.map(line => new Paragraph({
-                        children: createTextRunsFromMarkdown(line),
-                        bullet: { level: 0 }
-                    }));
-                } else {
-                    // Split content by newline to handle paragraphs
-                    body = s.content.split('\n').map(line => new Paragraph({ 
-                        children: createTextRunsFromMarkdown(line)
-                    }));
-                }
-                return [head, ...body];
-            }),
+
+            ...docxSections,
+
             // Appendix A
             new Paragraph({
                 text: "APPENDIX A: KEY ENTITIES",
@@ -223,12 +291,14 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
             }),
             ...report.entities.map(e => new Paragraph({
                 children: [
-                    new TextRun({ text: e.name, bold: true }),
-                    new TextRun({ text: ` [${e.type.toUpperCase()}]`, size: 18, color: "666666" }),
-                    new TextRun({ text: ` - ${e.context}` })
+                    new TextRun({ text: e.name, bold: true, font: "Calibri", size: 22 }),
+                    new TextRun({ text: ` [${e.type.toUpperCase()}]`, size: 18, color: "666666", font: "Calibri" }),
+                    new TextRun({ text: ` - ${e.context}`, font: "Calibri", size: 22 })
                 ],
+                bullet: { level: 0 },
                 spacing: { after: 120 }
             })),
+
             // Appendix B
             new Paragraph({
                 text: "APPENDIX B: SOURCE MANIFEST",
@@ -237,11 +307,11 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
             }),
             ...(report.relevantLinks || []).map((l, i) => new Paragraph({
                 children: [
-                    new TextRun({ text: `[${i+1}] `, bold: true }),
-                    new TextRun({ text: l.title || "External Source" }),
-                    new TextRun({ text: `\n${l.url}`, size: 16, color: "004488" })
+                    new TextRun({ text: `[${i+1}] `, bold: true, color: "1d4ed8", font: "Calibri", size: 22 }),
+                    new TextRun({ text: l.title || "External Source", bold: true, font: "Calibri", size: 22 }),
+                    new TextRun({ text: `\n${l.url}`, size: 16, color: "444444", font: "Calibri" })
                 ],
-                spacing: { after: 160 }
+                spacing: { after: 200 }
             }))
           ]
         }]
@@ -312,65 +382,98 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
                  
                  {/* Header Meta */}
                  <div className="border-b-2 border-black pb-6 mb-8">
-                    <h1 className="text-2xl font-bold uppercase tracking-wide leading-tight mb-2 font-sans">{report.reportTitle}</h1>
+                    <h1 className="text-2xl font-bold uppercase tracking-wide leading-tight mb-2 font-sans text-gray-900">{report.reportTitle}</h1>
                     <div className="flex justify-between items-end text-xs font-sans uppercase text-gray-500 font-bold tracking-wider">
                        <span>Intelligence Assessment</span>
                        <span>Date: {report.dateOfInformation}</span>
+                       <span className={`px-2 py-0.5 text-white ${report.classification.includes('SECRET') ? 'bg-red-600' : 'bg-uk-blue'}`}>{report.classification}</span>
                     </div>
                  </div>
 
                  {/* Executive Summary */}
-                 <div className="bg-gray-100 p-6 mb-10 border-l-4 border-black font-sans print-bg-force break-inside-avoid">
-                    <h3 className="font-bold text-xs uppercase mb-3 tracking-wider text-gray-900">Executive Summary (BLUF)</h3>
+                 <div className="bg-gray-50 p-6 mb-10 border-l-4 border-uk-blue font-sans print-bg-force break-inside-avoid">
+                    <h3 className="font-bold text-xs uppercase mb-3 tracking-wider text-uk-blue">Executive Summary (BLUF)</h3>
                     <p className="text-sm leading-relaxed font-medium text-gray-900 text-justify">{report.executiveSummary}</p>
                  </div>
 
                  {/* Sections */}
                  <div className="space-y-8">
-                    {report.sections.map((section, idx) => (
-                        <div key={idx} className="group relative break-inside-avoid">
-                            {/* Hover Tools */}
-                            <div className="absolute -left-12 top-0 hidden group-hover:flex flex-col gap-1 no-print">
-                                <button onClick={() => { setEditSectionTitle(section.title); setEditContent(Array.isArray(section.content) ? section.content.join('\n') : section.content); }} className="p-1.5 bg-gray-200 hover:bg-uk-blue hover:text-white rounded shadow transition-colors"><Pencil className="w-3 h-3"/></button>
-                            </div>
-
-                            <h2 className="font-sans font-bold text-sm uppercase border-b border-gray-300 pb-1 mb-3 flex items-center gap-2 text-gray-900">
-                                <span className="text-uk-blue print:text-black">{idx + 1}.0</span> {section.title}
-                            </h2>
-
-                            {Array.isArray(section.content) ? (
-                                <ul className="list-disc ml-4 pl-2 space-y-2 text-sm leading-relaxed text-justify text-gray-800 marker:text-gray-400">
-                                    {section.content.map((item, i) => (
-                                        <li key={i} className="pl-1 group/item relative">
-                                            <span>{renderMarkdown(item)}</span>
-                                            <button onClick={() => handleVerify(item, `${idx}-${i}`)} className="ml-2 text-[10px] font-bold text-uk-blue opacity-0 group-hover/item:opacity-100 hover:underline uppercase no-print transition-opacity">Verify</button>
-                                            {verifications[`${idx}-${i}`] && (
-                                                <div className={`mt-2 text-xs p-2 no-print rounded ${verifications[`${idx}-${i}`].status === 'Verified' ? 'bg-green-50 text-green-800 border border-green-100' : 'bg-red-50 text-red-800 border border-red-100'}`}>
-                                                    <strong>{verifications[`${idx}-${i}`].status}:</strong> {verifications[`${idx}-${i}`].explanation}
-                                                </div>
-                                            )}
-                                        </li>
-                                    ))}
-                                </ul>
-                            ) : (
-                                <div className="text-sm leading-relaxed text-justify text-gray-800 space-y-4">
-                                    {section.content.split('\n').map((para, i) => (
-                                        <p key={i}>{renderMarkdown(para)}</p>
-                                    ))}
+                    {report.sections.map((section, idx) => {
+                        const contentArray = Array.isArray(section.content) ? section.content : section.content.split('\n');
+                        
+                        return (
+                            <div key={idx} className="group relative break-inside-avoid">
+                                {/* Hover Tools */}
+                                <div className="absolute -left-12 top-0 hidden group-hover:flex flex-col gap-1 no-print">
+                                    <button onClick={() => { setEditSectionTitle(section.title); setEditContent(contentArray.join('\n')); }} className="p-1.5 bg-gray-200 hover:bg-uk-blue hover:text-white rounded shadow transition-colors"><Pencil className="w-3 h-3"/></button>
                                 </div>
-                            )}
-                        </div>
-                    ))}
+
+                                <h2 className="font-sans font-bold text-sm uppercase border-b border-gray-300 pb-1 mb-3 flex items-center gap-2 text-gray-900">
+                                    <span className="text-uk-blue print:text-black">{idx + 1}.0</span> {section.title}
+                                </h2>
+
+                                <div className="text-sm leading-relaxed text-justify text-gray-800 space-y-3">
+                                    {contentArray.map((para, i) => {
+                                        const trimmed = para.trim();
+                                        if (!trimmed) return null;
+                                        
+                                        const indent = getIndentLevel(para);
+                                        const paddingLeft = indent * 20 + (indent > 0 ? 10 : 0);
+
+                                        // Render Lists differently
+                                        if (trimmed.startsWith('- ') || trimmed.startsWith('• ') || trimmed.startsWith('* ')) {
+                                            const cleanText = trimmed.replace(/^[\-\•\*]\s+/, '');
+                                            return (
+                                                <div key={i} className="flex gap-2 pl-4" style={{ paddingLeft: `${paddingLeft + 16}px` }}>
+                                                    <span className="text-uk-blue font-bold">•</span>
+                                                    <div className="flex-1 group/item relative">
+                                                        <span>{parseMarkdownToReact(cleanText, `${idx}-${i}`)}</span>
+                                                    </div>
+                                                </div>
+                                            );
+                                        }
+
+                                        // Render Numbered Lists
+                                        if (/^\d+\.\s/.test(trimmed)) {
+                                            const cleanText = trimmed.replace(/^\d+\.\s+/, '');
+                                            const num = trimmed.match(/^\d+/)?.[0] || "1";
+                                            return (
+                                                <div key={i} className="flex gap-2 pl-4" style={{ paddingLeft: `${paddingLeft + 16}px` }}>
+                                                     <span className="text-uk-blue font-bold font-sans text-xs pt-0.5">{num}.</span>
+                                                     <div className="flex-1 group/item relative">
+                                                        <span>{parseMarkdownToReact(cleanText, `${idx}-${i}`)}</span>
+                                                    </div>
+                                                </div>
+                                            );
+                                        }
+
+                                        // Standard Paragraph
+                                        return (
+                                            <p key={i} className="group/item relative" style={{ paddingLeft: `${paddingLeft}px` }}>
+                                                {parseMarkdownToReact(trimmed, `${idx}-${i}`)}
+                                                <button onClick={() => handleVerify(trimmed, `${idx}-${i}`)} className="ml-2 text-[10px] font-bold text-gray-300 hover:text-uk-blue opacity-0 group-hover/item:opacity-100 hover:underline uppercase no-print transition-all">Verify</button>
+                                                {verifications[`${idx}-${i}`] && (
+                                                    <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded no-print inline-flex items-center gap-1 ${verifications[`${idx}-${i}`].status === 'Verified' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                                        {verifications[`${idx}-${i}`].status === 'Verified' ? <Check className="w-3 h-3"/> : <XIcon className="w-3 h-3"/>}
+                                                    </span>
+                                                )}
+                                            </p>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        );
+                    })}
                  </div>
 
                  {/* Footnotes / Sources */}
                  {report.relevantLinks && report.relevantLinks.length > 0 && (
                      <div className="mt-16 pt-8 border-t border-gray-300 font-sans break-inside-avoid">
-                         <h3 className="text-xs font-bold uppercase mb-4 text-gray-400 tracking-wider">Appendix A: Source Manifest</h3>
+                         <h3 className="text-xs font-bold uppercase mb-4 text-gray-400 tracking-wider">Appendix B: Source Manifest</h3>
                          <div className="space-y-3">
                              {report.relevantLinks.map((link, i) => (
                                  <div key={i} className="flex gap-3 text-xs text-gray-600">
-                                     <span className="font-mono text-gray-400 font-bold select-none">[{i+1}]</span>
+                                     <span className="font-mono text-uk-blue font-bold select-none">[{i+1}]</span>
                                      <div className="flex-1">
                                         <a href={link.url} target="_blank" className="hover:text-uk-blue hover:underline font-bold text-gray-800 block mb-0.5 print:no-underline print:text-black">{link.title || "External Source"}</a>
                                         <p className="text-gray-500 leading-tight">{link.summary || "No summary available."}</p>
@@ -385,7 +488,7 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
                  {/* Entities Footer */}
                  {report.entities && report.entities.length > 0 && (
                     <div className="mt-8 pt-8 border-t border-gray-300 font-sans break-inside-avoid">
-                        <h3 className="text-xs font-bold uppercase mb-4 text-gray-400 tracking-wider">Appendix B: Key Entities</h3>
+                        <h3 className="text-xs font-bold uppercase mb-4 text-gray-400 tracking-wider">Appendix A: Key Entities</h3>
                         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                             {report.entities.map((e, i) => (
                                 <div key={i} className="p-2 bg-gray-50 border border-gray-100 rounded print:border-gray-300">
@@ -402,8 +505,12 @@ const ReportDisplay: React.FC<ReportDisplayProps> = ({
 
               </div>
               
-              {/* Paper Footer (Space for classification if needed later, but kept empty for now) */}
-              <div className="h-12 w-full"></div>
+              {/* Paper Footer */}
+              <div className="h-16 w-full border-t border-gray-100 mt-auto flex items-center justify-between px-12 text-[10px] text-gray-400 font-sans">
+                  <span>{report.referenceNumber}</span>
+                  <span className="font-bold text-uk-blue uppercase tracking-widest">OFFICIAL-SENSITIVE</span>
+                  <span>Page 1</span>
+              </div>
             </div>
           )}
 

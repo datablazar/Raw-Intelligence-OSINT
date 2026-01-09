@@ -75,9 +75,13 @@ const InputSection: React.FC<InputSectionProps> = ({ onGenerate, isProcessing, v
   };
 
   const handleGenerate = () => {
-    if (rawText.trim().length === 0 && attachments.length === 0) return;
+    // Allow generate if ANY input is present (Text, Attachments, or Instructions)
+    if (!rawText.trim() && attachments.length === 0 && !instructions.trim()) return;
     onGenerate(rawText, attachments, instructions);
   };
+
+  // Button disabled logic: Only if everything is empty OR processing
+  const isButtonDisabled = isProcessing || (!rawText.trim() && attachments.length === 0 && !instructions.trim());
 
   return (
     <div className="flex flex-col h-full bg-gray-900 border border-gray-800 rounded-lg shadow-2xl relative overflow-hidden text-gray-100" onDragEnter={handleDrag}>
@@ -102,18 +106,18 @@ const InputSection: React.FC<InputSectionProps> = ({ onGenerate, isProcessing, v
       <div className="flex-grow flex flex-col p-6 gap-6 overflow-y-auto" onDragEnter={handleDrag} onDragLeave={handleDrag} onDragOver={handleDrag} onDrop={handleDrop}>
         
         <div className="flex-grow min-h-[150px] relative flex flex-col group">
-          <label className="text-[10px] font-bold text-gray-500 uppercase mb-2">Raw Intelligence</label>
+          <label className="text-[10px] font-bold text-gray-500 uppercase mb-2">Raw Intelligence / Research Topic</label>
           <textarea
             value={rawText}
             onChange={(e) => setRawText(e.target.value)}
-            placeholder="PASTE TEXT HERE..."
+            placeholder="Paste raw intel OR type a topic to research..."
             className="w-full h-full p-4 font-mono text-sm bg-black border border-gray-800 rounded focus:ring-1 focus:ring-uk-blue focus:border-uk-blue resize-none outline-none transition-all placeholder:text-gray-700 text-gray-300"
             disabled={isProcessing}
           />
         </div>
 
         <div className="flex-shrink-0 flex flex-col min-h-[80px]">
-           <label className="text-[10px] font-bold text-gray-500 uppercase mb-2">Specific Directives (Optional)</label>
+           <label className="text-[10px] font-bold text-gray-500 uppercase mb-2">Mission Directives / Specific Focus</label>
            <textarea
             value={instructions}
             onChange={(e) => setInstructions(e.target.value)}
@@ -164,8 +168,8 @@ const InputSection: React.FC<InputSectionProps> = ({ onGenerate, isProcessing, v
               )}
            </div>
 
-           <button onClick={handleGenerate} disabled={(!rawText.trim() && attachments.length === 0) || isProcessing}
-             className={`flex items-center gap-2 px-8 py-3 rounded font-bold text-xs uppercase tracking-widest transition-all ${(!rawText.trim() && attachments.length === 0) || isProcessing ? 'bg-gray-800 text-gray-600 cursor-not-allowed' : 'bg-uk-blue text-white hover:bg-blue-600 hover:shadow-[0_0_20px_rgba(29,78,216,0.5)]'}`}>
+           <button onClick={handleGenerate} disabled={isButtonDisabled}
+             className={`flex items-center gap-2 px-8 py-3 rounded font-bold text-xs uppercase tracking-widest transition-all ${isButtonDisabled ? 'bg-gray-800 text-gray-600 cursor-not-allowed' : 'bg-uk-blue text-white hover:bg-blue-600 hover:shadow-[0_0_20px_rgba(29,78,216,0.5)]'}`}>
              {isProcessing ? 'System Busy' : 'Initialize Operation'} {!isProcessing && <Play className="w-3 h-3 fill-current" />}
            </button>
         </div>
