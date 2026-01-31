@@ -12,7 +12,7 @@ const Header: React.FC = () => {
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-tight uppercase">Sentinel</h1>
-            <p className="text-[10px] text-gray-400 font-mono tracking-widest uppercase">UK Analysis Transformation Platform</p>
+            <p className="text-[10px] text-gray-400 font-mono tracking-widest uppercase">UK Intelligence Transformation Platform</p>
           </div>
         </div>
         <div className="flex items-center gap-4 text-sm text-gray-400">
@@ -22,7 +22,7 @@ const Header: React.FC = () => {
            </div>
            <div className="flex items-center gap-2">
               <FileText className="w-4 h-4" />
-              <span className="text-[10px] font-bold tracking-widest uppercase text-uk-red">STANDARD OUTPUT</span>
+              <span className="text-[10px] font-bold tracking-widest uppercase text-uk-red">SECURE // NOFORN</span>
            </div>
         </div>
       </div>

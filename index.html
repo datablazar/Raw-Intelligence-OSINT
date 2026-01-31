@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Sentinel - UK Analysis Reporter</title>
+    <title>Sentinel - UK Intelligence Reporter</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Roboto+Mono:wght@400;500&family=Merriweather:ital,wght@0,300;0,400;0,700;1,300;1,400&display=swap" rel="stylesheet">
     <script>
@@ -52,9 +52,6 @@
         /* Reset shadows */
         .shadow-lg, .shadow-xl, .shadow-2xl { box-shadow: none !important; }
         
-        /* Force paper background for exports */
-        .print-paper { background-color: white !important; color: black !important; }
-
         /* Ensure background colors print for specific elements if needed */
         .print-bg-force { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         
@@ -71,9 +68,22 @@
         box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04), 0 0 0 1px rgba(0,0,0,0.05);
       }
     </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "react": "https://esm.sh/react@^19.2.3",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "@google/genai": "https://esm.sh/@google/genai@^1.34.0",
+    "lucide-react": "https://esm.sh/lucide-react@^0.562.0",
+    "file-saver": "https://esm.sh/file-saver@2.0.5",
+    "docx": "https://esm.sh/docx@8.5.0",
+    "mammoth": "https://esm.sh/mammoth@1.6.0"
+  }
+}
+</script>
 </head>
   <body class="bg-gray-950 text-gray-100 min-h-screen font-sans antialiased overflow-hidden">
     <div id="root" class="h-full"></div>
-    <script type="module" src="/index.tsx"></script>
   </body>
 </html>

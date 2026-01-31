@@ -2,14 +2,7 @@
 import React, { useState, useRef } from 'react';
 import { Trash2, Upload, FileAudio, FileVideo, FileImage, X, Shield, Paperclip, Clipboard, Play, FileText } from 'lucide-react';
 import { Attachment } from '../types';
-const loadMammoth = (() => {
-  let cached: Promise<any> | null = null;
-  return async () => {
-    if (!cached) cached = import('mammoth');
-    const mod = await cached;
-    return mod.default ?? mod;
-  };
-})();
+import mammoth from 'mammoth';
 
 interface InputSectionProps {
   onGenerate: (text: string, attachments: Attachment[], instructions: string) => void;
@@ -53,7 +46,6 @@ const InputSection: React.FC<InputSectionProps> = ({ onGenerate, isProcessing, v
           try {
               type = 'text';
               const arrayBuffer = await file.arrayBuffer();
-              const mammoth = await loadMammoth();
               const result = await mammoth.extractRawText({ arrayBuffer });
               textContent = result.value;
           } catch (e) {
@@ -100,7 +92,7 @@ const InputSection: React.FC<InputSectionProps> = ({ onGenerate, isProcessing, v
           <h2 className="font-bold text-sm uppercase tracking-widest text-gray-400">Parameters</h2>
         </div>
         <button onClick={() => {
-            setRawText("FIELD NOTES // 2024 \nSOURCE: Open-source brief\nReports indicate movement of assets in Sector 7...");
+            setRawText("TOP SECRET // 2024 \nSOURCE: SIGINT-42\nIntercepted comms indicate movement of assets in Sector 7...");
             setInstructions("Focus on the capabilities of the ground units.");
         }} className="text-[10px] font-mono text-uk-blue hover:text-white uppercase">[Load Sample Data]</button>
       </div>
@@ -114,11 +106,11 @@ const InputSection: React.FC<InputSectionProps> = ({ onGenerate, isProcessing, v
       <div className="flex-grow flex flex-col p-6 gap-6 overflow-y-auto" onDragEnter={handleDrag} onDragLeave={handleDrag} onDragOver={handleDrag} onDrop={handleDrop}>
         
         <div className="flex-grow min-h-[150px] relative flex flex-col group">
-          <label className="text-[10px] font-bold text-gray-500 uppercase mb-2">Raw Material / Research Topic</label>
+          <label className="text-[10px] font-bold text-gray-500 uppercase mb-2">Raw Intelligence / Research Topic</label>
           <textarea
             value={rawText}
             onChange={(e) => setRawText(e.target.value)}
-            placeholder="Paste raw material OR type a topic to research..."
+            placeholder="Paste raw intel OR type a topic to research..."
             className="w-full h-full p-4 font-mono text-sm bg-black border border-gray-800 rounded focus:ring-1 focus:ring-uk-blue focus:border-uk-blue resize-none outline-none transition-all placeholder:text-gray-700 text-gray-300"
             disabled={isProcessing}
           />

@@ -1,10 +1,9 @@
 
-export enum ConfidenceLevel {
-  NOT_ASSESSED = "Not Assessed"
-}
-
 export enum Classification {
-  PUBLIC = "PUBLIC"
+  OFFICIAL = "OFFICIAL",
+  OFFICIAL_SENSITIVE = "OFFICIAL-SENSITIVE",
+  SECRET = "SECRET",
+  TOP_SECRET = "TOP SECRET"
 }
 
 export interface ReportSection {
@@ -33,7 +32,7 @@ export interface FailedSource {
   isHighValue: boolean;
 }
 
-export interface AnalysisReport {
+export interface IntelligenceReport {
   classification: Classification;
   handlingInstructions: string;
   reportTitle: string;
@@ -44,7 +43,6 @@ export interface AnalysisReport {
   entities: Entity[];
   sourceReliability: string;
   analystComment: string;
-  overallConfidence: ConfidenceLevel;
   relevantLinks?: SourceReference[];
 }
 
@@ -67,7 +65,7 @@ export interface ProcessingState {
 export interface HistoryItem {
   id: string;
   timestamp: number;
-  report: AnalysisReport;
+  report: IntelligenceReport;
   rawContext: string;
 }
 

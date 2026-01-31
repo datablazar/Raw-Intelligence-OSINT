@@ -1,10 +1,10 @@
-import React, { useState, useEffect, Suspense, lazy } from 'react';
+import React, { useState, useEffect } from 'react';
+import Header from './components/Header';
 import InputSection from './components/InputSection';
-import { AnalysisReport, HistoryItem, Attachment, MissionConfig } from './types';
+import ReportDisplay from './components/ReportDisplay';
+import MissionWizard from './components/MissionWizard';
+import { IntelligenceReport, HistoryItem, Attachment, MissionConfig } from './types';
 import { LayoutDashboard, FileText, Plus, LogOut } from 'lucide-react';
-
-const ReportDisplay = lazy(() => import('./components/ReportDisplay'));
-const MissionWizard = lazy(() => import('./components/MissionWizard'));
 
 const App: React.FC = () => {
   const [history, setHistory] = useState<HistoryItem[]>(() => {
@@ -32,7 +32,7 @@ const App: React.FC = () => {
     setActiveConfig({ rawText, attachments, instructions });
   };
 
-  const handleMissionComplete = (report: AnalysisReport) => {
+  const handleMissionComplete = (report: IntelligenceReport) => {
     const newId = crypto.randomUUID();
     const newItem: HistoryItem = { id: newId, timestamp: Date.now(), report, rawContext };
     setHistory(prev => [...prev, newItem]);
@@ -40,7 +40,7 @@ const App: React.FC = () => {
     setActiveConfig(null);
   };
 
-  const handleUpdateReport = (updatedReport: AnalysisReport) => {
+  const handleUpdateReport = (updatedReport: IntelligenceReport) => {
     if (!activeId) return;
     setHistory(prev => prev.map(item => item.id === activeId ? { ...item, report: updatedReport } : item));
   };
@@ -58,13 +58,11 @@ const App: React.FC = () => {
       
       {/* Wizard Overlay */}
       {activeConfig && (
-        <Suspense fallback={<div className="absolute inset-0 bg-black/60 flex items-center justify-center text-sm text-gray-200">Loading...</div>}>
-          <MissionWizard 
-            config={activeConfig} 
-            onComplete={handleMissionComplete} 
-            onCancel={() => setActiveConfig(null)} 
-          />
-        </Suspense>
+        <MissionWizard 
+          config={activeConfig} 
+          onComplete={handleMissionComplete} 
+          onCancel={() => setActiveConfig(null)} 
+        />
       )}
       
       {/* App Shell */}
@@ -116,25 +114,23 @@ const App: React.FC = () => {
              <div className="flex-1 p-6 md:p-12 overflow-y-auto">
                 <div className="max-w-3xl mx-auto space-y-8">
                   <div className="text-center space-y-2 mb-12">
-                     <h1 className="text-3xl font-bold text-uk-navy tracking-tight">Analysis Generation and Transformation Platform</h1>
+                     <h1 className="text-3xl font-bold text-uk-navy tracking-tight">Intelligence Generation and Transformation Platform</h1>
                      <p className="text-gray-500">Raw input and research environment</p>
                   </div>
                   <InputSection onGenerate={handleStartMission} isProcessing={false} />
                 </div>
              </div>
            ) : (
-             <Suspense fallback={<div className="flex-1 flex items-center justify-center text-sm text-gray-500">Loading report...</div>}>
-               <ReportDisplay 
-                 report={activeReport} 
-                 reset={() => setActiveId(null)} 
-                 history={history}
-                 currentReportId={activeId}
-                 onSelectReport={setActiveId}
-                 onUpdateReport={handleUpdateReport}
-                 onClearHistory={handleClearHistory}
-                 rawContext={rawContext}
-               />
-             </Suspense>
+             <ReportDisplay 
+               report={activeReport} 
+               reset={() => setActiveId(null)} 
+               history={history}
+               currentReportId={activeId}
+               onSelectReport={setActiveId}
+               onUpdateReport={handleUpdateReport}
+               onClearHistory={handleClearHistory}
+               rawContext={rawContext}
+             />
            )}
         </div>
       </div>

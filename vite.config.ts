@@ -17,20 +17,6 @@ export default defineConfig(({ mode }) => {
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),
-          path: 'path-browserify'
-        }
-      },
-      build: {
-        rollupOptions: {
-          output: {
-            manualChunks: {
-              react: ['react', 'react-dom'],
-              genai: ['@google/genai'],
-              docx: ['docx', 'file-saver'],
-              mammoth: ['mammoth'],
-              icons: ['lucide-react']
-            }
-          }
         }
       }
     };

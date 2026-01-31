@@ -44,8 +44,8 @@ const ProcessingHUD: React.FC<ProcessingHUDProps> = ({ state, onDismissError }) 
   const getPhaseText = () => {
     switch (state.status) {
       case 'planning': return "PHASE 1: TACTICAL PLANNING & TRIAGE";
-      case 'researching': return "PHASE 2: GLOBAL RESEARCH GATHERING";
-      case 'synthesizing': return "PHASE 3: REPORT COMPILATION";
+      case 'researching': return "PHASE 2: GLOBAL ACTIVE INTELLIGENCE GATHERING";
+      case 'synthesizing': return "PHASE 3: INTREP COMPILATION & ENCRYPTION";
       default: return "SENTINEL PROTOCOL INITIALIZED";
     }
   };
@@ -62,7 +62,7 @@ const ProcessingHUD: React.FC<ProcessingHUDProps> = ({ state, onDismissError }) 
             {getPhaseIcon()}
             <div>
               <h2 className="text-xl text-white font-mono font-bold tracking-widest">{getPhaseText()}</h2>
-              <p className="text-xs text-uk-blue font-mono mt-1">SESSION ACTIVE</p>
+              <p className="text-xs text-uk-blue font-mono mt-1">SECURE CONNECTION ESTABLISHED // TOP SECRET</p>
             </div>
           </div>
           <ActivityIndicator />
